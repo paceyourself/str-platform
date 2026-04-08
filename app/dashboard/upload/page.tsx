@@ -252,7 +252,6 @@ export default function BookingsUploadPage() {
     const papaResult = Papa.parse<Record<string, unknown>>(normalized, {
       header: true,
       skipEmptyLines: "greedy",
-      trimHeaders: false,
       dynamicTyping: false,
     });
 
