@@ -4,7 +4,12 @@ import { createClient } from "@/lib/supabase";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-type PropertyRow = { id: string; address_line1: string | null; city: string | null };
+type PropertyRow = {
+  id: string;
+  property_name: string | null;
+  address_line1: string | null;
+  city: string | null;
+};
 
 type PmProfileNested = { company_name: string | null };
 
@@ -88,8 +93,9 @@ export default function DashboardPage() {
 
     const { data, error } = await supabase
       .from("properties")
-      .select("id, address_line1, city")
+      .select("id, property_name, address_line1, city")
       .eq("owner_id", user.id)
+      .order("property_name", { ascending: true, nullsFirst: false })
       .order("address_line1", { ascending: true, nullsFirst: false });
 
     setPropertiesLoading(false);
@@ -199,8 +205,13 @@ export default function DashboardPage() {
     };
   }, [filteredBookings]);
 
-  const propertyLabel = (p: PropertyRow) =>
-    [p.address_line1, p.city].filter(Boolean).join(", ") || "Property";
+  const propertyLabel = (p: PropertyRow) => {
+    const primary =
+      p.property_name?.trim() ||
+      p.address_line1?.trim() ||
+      "Property";
+    return [primary, p.city].filter(Boolean).join(", ");
+  };
 
   return (
     <div className="space-y-8">

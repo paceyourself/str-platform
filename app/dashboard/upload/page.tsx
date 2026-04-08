@@ -4,9 +4,17 @@ import { createClient } from "@/lib/supabase";
 import Papa from "papaparse";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-type PropertyOption = { id: string; address_line1: string | null };
+type PropertyOption = {
+  id: string;
+  property_name: string | null;
+  address_line1: string | null;
+};
 
-type OwnerPmRelationshipOption = { id: string };
+function propertyOptionLabel(p: PropertyOption) {
+  const primary =
+    (p.property_name?.trim() || p.address_line1?.trim() || "").trim() || p.id;
+  return primary;
+}
 
 /**
  * CSV column header → bookings column (keys must match export headers exactly:
@@ -73,7 +81,7 @@ function rowToPayload(
   headers: string[],
   cells: string[],
   propertyId: string,
-  ownerPmRelationshipId: string,
+  ownerPmRelationshipId: string | null,
   sourceFileId: string
 ): Record<string, unknown> | null {
   const row: Record<string, string> = {};
@@ -132,10 +140,6 @@ export default function BookingsUploadPage() {
   const supabase = useMemo(() => createClient(), []);
   const [properties, setProperties] = useState<PropertyOption[]>([]);
   const [propertyId, setPropertyId] = useState("");
-  const [relationships, setRelationships] = useState<OwnerPmRelationshipOption[]>(
-    []
-  );
-  const [ownerPmRelationshipId, setOwnerPmRelationshipId] = useState("");
   const [fileName, setFileName] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -153,9 +157,10 @@ export default function BookingsUploadPage() {
     }
     const { data, error: qErr } = await supabase
       .from("properties")
-      .select("id, address_line1")
+      .select("id, property_name, address_line1")
       .eq("owner_id", user.id)
-      .order("address_line1", { ascending: true });
+      .order("property_name", { ascending: true, nullsFirst: false })
+      .order("address_line1", { ascending: true, nullsFirst: false });
     setLoadingProps(false);
     if (qErr) {
       setError(qErr.message);
@@ -165,36 +170,9 @@ export default function BookingsUploadPage() {
     if (data?.length === 1) setPropertyId(data[0].id);
   }, [supabase]);
 
-  const loadRelationships = useCallback(async () => {
-    setOwnerPmRelationshipId("");
-    setRelationships([]);
-    if (!propertyId) return;
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) return;
-    const { data, error: rErr } = await supabase
-      .from("owner_pm_relationships")
-      .select("id")
-      .eq("property_id", propertyId)
-      .eq("owner_id", user.id)
-      .eq("active", true);
-    if (rErr) {
-      setError(rErr.message);
-      return;
-    }
-    const list = data ?? [];
-    setRelationships(list);
-    if (list.length === 1) setOwnerPmRelationshipId(list[0].id);
-  }, [propertyId, supabase]);
-
   useEffect(() => {
     loadProperties();
   }, [loadProperties]);
-
-  useEffect(() => {
-    loadRelationships();
-  }, [loadRelationships]);
 
   async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     setError(null);
@@ -209,12 +187,6 @@ export default function BookingsUploadPage() {
       return;
     }
 
-    if (!ownerPmRelationshipId) {
-      setError("Select an owner–PM relationship for this property.");
-      e.target.value = "";
-      return;
-    }
-
     const {
       data: { user },
     } = await supabase.auth.getUser();
@@ -223,6 +195,19 @@ export default function BookingsUploadPage() {
       e.target.value = "";
       return;
     }
+
+    const { data: relRows, error: relErr } = await supabase
+      .from("owner_pm_relationships")
+      .select("id")
+      .eq("property_id", propertyId)
+      .eq("owner_id", user.id)
+      .eq("active", true)
+      .limit(1);
+
+    if (relErr) {
+      console.error(relErr);
+    }
+    const ownerPmRelationshipId: string | null = relRows?.[0]?.id ?? null;
 
     const { data: sourceFileRow, error: sourceFileErr } = await supabase
       .from("upload_files")
@@ -382,45 +367,10 @@ export default function BookingsUploadPage() {
           </option>
           {properties.map((p) => (
             <option key={p.id} value={p.id}>
-              {p.address_line1 || p.id}
+              {propertyOptionLabel(p)}
             </option>
           ))}
         </select>
-      </div>
-
-      <div>
-        <label
-          htmlFor="owner_pm_relationship"
-          className="block text-sm font-medium text-zinc-700 dark:text-zinc-300"
-        >
-          Owner–PM relationship
-        </label>
-        <select
-          id="owner_pm_relationship"
-          value={ownerPmRelationshipId}
-          onChange={(e) => setOwnerPmRelationshipId(e.target.value)}
-          disabled={!propertyId || relationships.length === 0}
-          className="mt-1.5 block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50"
-        >
-          <option value="">
-            {!propertyId
-              ? "Select a property first"
-              : relationships.length === 0
-                ? "No active relationship for this property"
-                : "Select relationship"}
-          </option>
-          {relationships.map((r) => (
-            <option key={r.id} value={r.id}>
-              {r.id}
-            </option>
-          ))}
-        </select>
-        {propertyId && relationships.length === 0 ? (
-          <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
-            Add an active PM relationship for this property (e.g. via onboarding)
-            before uploading.
-          </p>
-        ) : null}
       </div>
 
       <div>
@@ -434,7 +384,7 @@ export default function BookingsUploadPage() {
           id="csv"
           type="file"
           accept=".csv,text/csv"
-          disabled={uploading || !propertyId || !ownerPmRelationshipId}
+          disabled={uploading || !propertyId}
           onChange={onFile}
           className="mt-1.5 block w-full text-sm text-zinc-600 file:mr-3 file:rounded-lg file:border-0 file:bg-zinc-900 file:px-3 file:py-2 file:text-sm file:font-medium file:text-white dark:text-zinc-400 dark:file:bg-zinc-100 dark:file:text-zinc-900"
         />

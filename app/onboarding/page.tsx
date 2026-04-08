@@ -1,5 +1,9 @@
 "use client";
 
+/**
+ * Requires column: ALTER TABLE public.properties ADD COLUMN property_name text;
+ */
+
 import { createClient } from "@/lib/supabase";
 import { useRouter } from "next/navigation";
 import {
@@ -35,6 +39,7 @@ export default function OnboardingPage() {
   const [authReady, setAuthReady] = useState(false);
   const [step, setStep] = useState<1 | 2>(1);
 
+  const [propertyName, setPropertyName] = useState("");
   const [addressLine1, setAddressLine1] = useState("");
   const [addressLine2, setAddressLine2] = useState("");
   const [city, setCity] = useState("");
@@ -128,6 +133,10 @@ export default function OnboardingPage() {
   }, [pmList, pmSearch]);
 
   function validateStep1(): boolean {
+    if (!propertyName.trim()) {
+      setError("Please enter a property name or nickname.");
+      return false;
+    }
     if (!addressLine1.trim() || !city.trim() || !state.trim() || !zip.trim()) {
       setError("Please fill in all required address fields.");
       return false;
@@ -198,6 +207,7 @@ export default function OnboardingPage() {
     const propertyPayload = {
       owner_id: user.id,
       market_id: MARKET,
+      property_name: propertyName.trim(),
       address_line1: addressLine1.trim(),
       address_line2: addressLine2.trim() || null,
       city: city.trim(),
@@ -305,6 +315,26 @@ export default function OnboardingPage() {
           }}
         >
           <input type="hidden" name="market_id" value={MARKET} />
+
+          <div>
+            <label
+              htmlFor="property_name"
+              className="block text-sm font-medium text-zinc-700 dark:text-zinc-300"
+            >
+              Property name or nickname e.g. Mystic Cottage{" "}
+              <span className="text-red-600">*</span>
+            </label>
+            <input
+              id="property_name"
+              name="property_name"
+              type="text"
+              required
+              value={propertyName}
+              onChange={(e) => setPropertyName(e.target.value)}
+              className="mt-1.5 block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 shadow-sm outline-none focus:border-zinc-900 focus:ring-2 focus:ring-zinc-900/20 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50 dark:focus:border-zinc-400 dark:focus:ring-zinc-400/20"
+              placeholder="Mystic Cottage"
+            />
+          </div>
 
           <div>
             <label
