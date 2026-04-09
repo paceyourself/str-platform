@@ -40,8 +40,12 @@ function mapCsvTypeToBlockType(csvType: string): string {
   const t = csvType.trim();
   if (!t) return "other";
   const map: Record<string, string> = {
+    Guest: "guest_pm_direct",
     Vrbo: "guest_ota",
     Website: "guest_ota",
+    "Booking.com": "guest_ota",
+    Airbnb: "guest_ota",
+    Owner: "owner_stay",
     "Owner Guest": "owner_guest",
     "Owner Hold": "owner_stay",
     Maintenance: "maintenance",
