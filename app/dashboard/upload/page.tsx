@@ -1,10 +1,8 @@
 "use client";
 
-export const dynamic = "force-dynamic";
-
 import { createClient } from "@/lib/supabase";
 import Papa from "papaparse";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 type PropertyOption = {
   id: string;
@@ -139,7 +137,7 @@ function rowToPayload(
 }
 
 export default function BookingsUploadPage() {
-  const supabase = useMemo(() => createClient(), []);
+  const supabase = createClient();
   const [properties, setProperties] = useState<PropertyOption[]>([]);
   const [propertyId, setPropertyId] = useState("");
   const [fileName, setFileName] = useState<string | null>(null);

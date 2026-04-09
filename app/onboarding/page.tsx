@@ -1,20 +1,12 @@
 "use client";
 
-export const dynamic = "force-dynamic";
-
 /**
  * Requires column: ALTER TABLE public.properties ADD COLUMN property_name text;
  */
 
 import { createClient } from "@/lib/supabase";
 import { useRouter } from "next/navigation";
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const MARKET = "30a" as const;
 
@@ -36,7 +28,7 @@ type PmRow = { id: string; company_name: string };
 
 export default function OnboardingPage() {
   const router = useRouter();
-  const supabase = useMemo(() => createClient(), []);
+  const supabase = createClient();
 
   const [authReady, setAuthReady] = useState(false);
   const [step, setStep] = useState<1 | 2>(1);

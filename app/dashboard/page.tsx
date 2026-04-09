@@ -1,7 +1,5 @@
 "use client";
 
-export const dynamic = "force-dynamic";
-
 import { createClient } from "@/lib/supabase";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -65,7 +63,7 @@ function formatMoney(n: number) {
 }
 
 export default function DashboardPage() {
-  const supabase = useMemo(() => createClient(), []);
+  const supabase = createClient();
 
   const [email, setEmail] = useState<string | null>(null);
   const [properties, setProperties] = useState<PropertyRow[]>([]);
