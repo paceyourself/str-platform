@@ -151,6 +151,27 @@ export default function BookingsUploadPage() {
   const [error, setError] = useState<string | null>(null);
   const [loadingProps, setLoadingProps] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [activeOwnerPmRelationshipId, setActiveOwnerPmRelationshipId] =
+    useState<string | null>(null);
+
+  const fetchActiveOwnerPmRelationshipId = useCallback(
+    async (pid: string): Promise<string | null> => {
+      const { data, error: relErr } = await supabase
+        .from("owner_pm_relationships")
+        .select("id")
+        .eq("property_id", pid)
+        .eq("active", true)
+        .order("start_date", { ascending: false, nullsFirst: false })
+        .limit(1);
+      if (relErr) {
+        console.error(relErr);
+        return null;
+      }
+      const rid = data?.[0]?.id;
+      return rid != null && String(rid).trim() !== "" ? String(rid) : null;
+    },
+    [supabase]
+  );
 
   const loadProperties = useCallback(async () => {
     setLoadingProps(true);
@@ -185,6 +206,21 @@ export default function BookingsUploadPage() {
     loadProperties();
   }, [loadProperties]);
 
+  useEffect(() => {
+    if (!propertyId) {
+      setActiveOwnerPmRelationshipId(null);
+      return;
+    }
+    setActiveOwnerPmRelationshipId(null);
+    let cancelled = false;
+    fetchActiveOwnerPmRelationshipId(propertyId).then((id) => {
+      if (!cancelled) setActiveOwnerPmRelationshipId(id);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [propertyId, fetchActiveOwnerPmRelationshipId]);
+
   async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     setError(null);
     setStatus(null);
@@ -206,19 +242,6 @@ export default function BookingsUploadPage() {
       e.target.value = "";
       return;
     }
-
-    const { data: relRows, error: relErr } = await supabase
-      .from("owner_pm_relationships")
-      .select("id")
-      .eq("property_id", propertyId)
-      .eq("owner_id", user.id)
-      .eq("active", true)
-      .limit(1);
-
-    if (relErr) {
-      console.error(relErr);
-    }
-    const ownerPmRelationshipId: string | null = relRows?.[0]?.id ?? null;
 
     const { data: sourceFileRow, error: sourceFileErr } = await supabase
       .from("upload_files")
@@ -297,7 +320,7 @@ export default function BookingsUploadPage() {
         headers,
         cells,
         propertyId,
-        ownerPmRelationshipId,
+        activeOwnerPmRelationshipId,
         sourceFileId
       );
       if (p) payloads.push(p);
