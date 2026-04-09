@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 type PropertyRow = {
@@ -63,6 +64,7 @@ function formatMoney(n: number) {
 }
 
 export default function DashboardPage() {
+  const router = useRouter();
   const supabase = createClient();
 
   const [email, setEmail] = useState<string | null>(null);
@@ -105,12 +107,16 @@ export default function DashboardPage() {
       return;
     }
     const list = data ?? [];
+    if (list.length === 0) {
+      router.push("/onboarding");
+      return;
+    }
     setProperties(list);
     setSelectedPropertyId((prev) => {
       if (prev && list.some((p) => p.id === prev)) return prev;
       return list[0]?.id ?? "";
     });
-  }, [supabase]);
+  }, [router, supabase]);
 
   const loadPmAndBookings = useCallback(async () => {
     if (!selectedPropertyId) {
@@ -192,9 +198,10 @@ export default function DashboardPage() {
     );
     const avgNightly =
       totalNights > 0 ? totalRevenue / totalNights : null;
-    const ownerStays = filteredBookings.filter(
-      (b) => b.block_type === "owner_stay"
-    ).length;
+    const ownerStays = filteredBookings.filter((b) => {
+      const t = (b.block_type ?? "").trim().toLowerCase();
+      return t === "owner_stay" || t === "owner_guest";
+    }).length;
 
     return {
       totalGuestBookings,
@@ -398,13 +405,13 @@ export default function DashboardPage() {
             </div>
             <div className="rounded-lg bg-zinc-50 p-3 dark:bg-zinc-900/50">
               <dt className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                Owner stays
+                Owner & Guest Stays
               </dt>
               <dd className="mt-1 text-2xl font-semibold tabular-nums text-zinc-900 dark:text-zinc-50">
                 {bookingStats.ownerStays}
               </dd>
               <p className="mt-0.5 text-xs text-zinc-500">
-                <code className="text-[11px]">owner_stay</code>
+                Personal-use and owner guest blocks
               </p>
             </div>
           </dl>

@@ -315,7 +315,7 @@ export default function OnboardingPage() {
               htmlFor="property_name"
               className="block text-sm font-medium text-zinc-700 dark:text-zinc-300"
             >
-              Property name or nickname e.g. Mystic Cottage{" "}
+              Property name or nickname{" "}
               <span className="text-red-600">*</span>
             </label>
             <input
@@ -326,7 +326,7 @@ export default function OnboardingPage() {
               value={propertyName}
               onChange={(e) => setPropertyName(e.target.value)}
               className="mt-1.5 block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 shadow-sm outline-none focus:border-zinc-900 focus:ring-2 focus:ring-zinc-900/20 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50 dark:focus:border-zinc-400 dark:focus:ring-zinc-400/20"
-              placeholder="Mystic Cottage"
+              placeholder="e.g. Mystic Cottage"
             />
           </div>
 

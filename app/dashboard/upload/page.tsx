@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase";
 import Papa from "papaparse";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
 type PropertyOption = {
@@ -137,6 +138,7 @@ function rowToPayload(
 }
 
 export default function BookingsUploadPage() {
+  const router = useRouter();
   const supabase = createClient();
   const [properties, setProperties] = useState<PropertyOption[]>([]);
   const [propertyId, setPropertyId] = useState("");
@@ -166,9 +168,14 @@ export default function BookingsUploadPage() {
       setError(qErr.message);
       return;
     }
-    setProperties(data ?? []);
-    if (data?.length === 1) setPropertyId(data[0].id);
-  }, [supabase]);
+    const list = data ?? [];
+    if (list.length === 0) {
+      router.push("/onboarding");
+      return;
+    }
+    setProperties(list);
+    if (list.length === 1) setPropertyId(list[0].id);
+  }, [router, supabase]);
 
   useEffect(() => {
     loadProperties();
@@ -298,12 +305,59 @@ export default function BookingsUploadPage() {
       return;
     }
 
+    const { data: existingRows, error: existingErr } = await supabase
+      .from("bookings")
+      .select("source_reservation_id")
+      .eq("property_id", propertyId);
+
+    if (existingErr) {
+      setError(existingErr.message);
+      e.target.value = "";
+      return;
+    }
+
+    const existingIds = new Set<string>();
+    for (const row of existingRows ?? []) {
+      const id = row.source_reservation_id;
+      if (id != null && String(id).trim() !== "") {
+        existingIds.add(String(id).trim());
+      }
+    }
+
+    const toInsert: Record<string, unknown>[] = [];
+    let skippedDuplicates = 0;
+    for (const p of payloads) {
+      const raw = p.source_reservation_id;
+      const key =
+        raw != null && String(raw).trim() !== ""
+          ? String(raw).trim()
+          : null;
+      if (key != null) {
+        if (existingIds.has(key)) {
+          skippedDuplicates += 1;
+          continue;
+        }
+        existingIds.add(key);
+      }
+      toInsert.push(p);
+    }
+
+    if (toInsert.length === 0) {
+      setStatus(
+        skippedDuplicates > 0
+          ? `No new rows to import. Skipped ${skippedDuplicates} duplicate reservation id(s) already on file for this property.`
+          : "No new rows to import."
+      );
+      e.target.value = "";
+      return;
+    }
+
     setUploading(true);
-    console.log("First row payload:", payloads[0]);
+    console.log("First row payload:", toInsert[0]);
     const chunk = 40;
     let inserted = 0;
-    for (let i = 0; i < payloads.length; i += chunk) {
-      const slice = payloads.slice(i, i + chunk);
+    for (let i = 0; i < toInsert.length; i += chunk) {
+      const slice = toInsert.slice(i, i + chunk);
       const { error: insErr } = await supabase.from("bookings").insert(slice);
       if (insErr) {
         setUploading(false);
@@ -314,7 +368,13 @@ export default function BookingsUploadPage() {
       inserted += slice.length;
     }
     setUploading(false);
-    setStatus(`Imported ${inserted} booking row(s).`);
+    const parts: string[] = [`Inserted ${inserted} new booking row(s).`];
+    if (skippedDuplicates > 0) {
+      parts.push(
+        `Skipped ${skippedDuplicates} duplicate row(s) (reservation id already exists for this property).`
+      );
+    }
+    setStatus(parts.join(" "));
     e.target.value = "";
   }
 
