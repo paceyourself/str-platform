@@ -1,5 +1,7 @@
 "use client";
 
+export const dynamic = "force-dynamic";
+
 /**
  * Requires column: ALTER TABLE public.properties ADD COLUMN property_name text;
  */
