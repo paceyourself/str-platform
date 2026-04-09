@@ -18,7 +18,7 @@ export async function createClient() {
               cookieStore.set(name, value, options)
             );
           } catch {
-            // Called from a Server Component without mutable cookies; middleware can refresh the session.
+            // Called from a Server Component without mutable cookies; proxy can refresh the session.
           }
         },
       },

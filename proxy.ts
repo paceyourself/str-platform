@@ -15,7 +15,7 @@ function isDashboardPath(pathname: string) {
   return p === "/dashboard" || pathname.startsWith("/dashboard/");
 }
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   let supabaseResponse = NextResponse.next({
     request: {
       headers: request.headers,
