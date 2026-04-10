@@ -29,6 +29,7 @@ type OwnerPmRow = {
   contract_notice_days: number | null;
   contract_etf_exists: boolean | null;
   contract_listing_transfer: boolean | null;
+  contract_maintenance_threshold: number | string | null;
   /** PostgREST may return one object or an array for embedded relations */
   pm_profiles: PmProfileNested | PmProfileNested[] | null;
 };
@@ -87,6 +88,15 @@ function formatMoneyCompact(n: number) {
     currency: "USD",
     maximumFractionDigits: 2,
   }).format(n);
+}
+
+function formatMaintenanceThreshold(
+  value: number | string | null | undefined
+): string {
+  if (value == null) return "Not specified";
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return "Not specified";
+  return formatMoney(n);
 }
 
 /** Last 12 calendar months ending at current month, oldest first. */
@@ -280,6 +290,7 @@ export default function DashboardPage() {
         contract_notice_days,
         contract_etf_exists,
         contract_listing_transfer,
+        contract_maintenance_threshold,
         pm_profiles ( company_name )
       `
       )
@@ -548,6 +559,16 @@ export default function DashboardPage() {
                   : pmRow.contract_etf_exists === false
                     ? "No"
                     : "—"}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-zinc-500 dark:text-zinc-400">
+                Maintenance approval threshold
+              </dt>
+              <dd className="font-medium text-zinc-900 dark:text-zinc-50">
+                {formatMaintenanceThreshold(
+                  pmRow.contract_maintenance_threshold
+                )}
               </dd>
             </div>
             <div className="sm:col-span-2">

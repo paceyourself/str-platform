@@ -62,6 +62,8 @@ export default function OnboardingPage() {
   const [listingTransfersOnExit, setListingTransfersOnExit] = useState(false);
   const [paymentTimelineDays, setPaymentTimelineDays] = useState("");
   const [exclusivityClause, setExclusivityClause] = useState(false);
+  const [contractMaintenanceThreshold, setContractMaintenanceThreshold] =
+    useState("");
 
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -184,6 +186,15 @@ export default function OnboardingPage() {
         setError("Contract start date is required when a PM is selected.");
         return;
       }
+      if (contractMaintenanceThreshold.trim()) {
+        const t = Number(contractMaintenanceThreshold);
+        if (!Number.isFinite(t) || t < 0) {
+          setError(
+            "Maintenance approval threshold must be a non-negative number."
+          );
+          return;
+        }
+      }
     }
 
     setSubmitting(true);
@@ -241,6 +252,12 @@ export default function OnboardingPage() {
           ? Number(paymentTimelineDays)
           : null,
         contract_exclusivity: exclusivityClause,
+        contract_maintenance_threshold: (() => {
+          const raw = contractMaintenanceThreshold.trim();
+          if (!raw) return null;
+          const t = Number(raw);
+          return Number.isFinite(t) ? t : null;
+        })(),
       };
 
       const { error: relError } = await supabase
@@ -667,6 +684,33 @@ export default function OnboardingPage() {
                   Exclusivity clause
                 </span>
               </label>
+
+              <div>
+                <label
+                  htmlFor="contract_maintenance_threshold"
+                  className="block text-sm font-medium text-zinc-700 dark:text-zinc-300"
+                >
+                  Maintenance approval threshold ($)
+                </label>
+                <input
+                  id="contract_maintenance_threshold"
+                  name="contract_maintenance_threshold"
+                  type="number"
+                  min={0}
+                  step={1}
+                  inputMode="decimal"
+                  placeholder="e.g. 250"
+                  value={contractMaintenanceThreshold}
+                  onChange={(e) =>
+                    setContractMaintenanceThreshold(e.target.value)
+                  }
+                  className="mt-1.5 block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 shadow-sm outline-none focus:border-zinc-900 focus:ring-2 focus:ring-zinc-900/20 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50 dark:focus:border-zinc-400 dark:focus:ring-zinc-400/20"
+                />
+                <p className="mt-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+                  Dollar amount above which PM must get your approval before
+                  proceeding with maintenance work
+                </p>
+              </div>
             </div>
           ) : null}
 
