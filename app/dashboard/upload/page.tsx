@@ -3,7 +3,9 @@
 import { createClient } from "@/lib/supabase";
 import Papa from "papaparse";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+
+const MARKET = "30a" as const;
 
 type PropertyOption = {
   id: string;
@@ -11,15 +13,23 @@ type PropertyOption = {
   address_line1: string | null;
 };
 
-function propertyOptionLabel(p: PropertyOption) {
-  const primary =
-    (p.property_name?.trim() || p.address_line1?.trim() || "").trim() || p.id;
-  return primary;
-}
+type PmOption = { id: string; company_name: string };
+
+type ParsedUploadState = {
+  fileName: string;
+  headers: string[];
+  rawRows: Record<string, unknown>[];
+  /** Distinct Unit values → row count */
+  unitCounts: Map<string, number>;
+  /** Unit labels in CSV that do not match any owner property_name (case-insensitive) */
+  unknownUnits: string[];
+  /** Every non-empty Reservation Id from the file (for cancellation sync) */
+  csvReservationIds: Set<string>;
+};
 
 /**
- * CSV column header → bookings column (keys must match export headers exactly:
- * capitalization, spaces, hyphens). `null` = skip (not inserted).
+ * CSV column header → bookings column (keys must match export headers exactly).
+ * `null` = skip (not inserted from this map).
  */
 const BOOKINGS_CSV_MAP: Record<string, string | null> = {
   "Reservation Id": "source_reservation_id",
@@ -45,6 +55,7 @@ function mapCsvTypeToBlockType(csvType: string): string {
     Website: "guest_ota",
     "Booking.com": "guest_ota",
     Airbnb: "guest_ota",
+    BNBFinder: "guest_ota",
     Owner: "owner_stay",
     "Owner Guest": "owner_guest",
     "Owner Hold": "owner_stay",
@@ -53,7 +64,6 @@ function mapCsvTypeToBlockType(csvType: string): string {
   return map[t] ?? "other";
 }
 
-/** Normalize date strings to YYYY-MM-DD for Postgres `date` columns. CSV uses M/D/YYYY (e.g. 4/7/2026). */
 function parseDateValue(raw: string): string | null {
   const s = raw.trim();
   if (!s) return null;
@@ -81,6 +91,28 @@ const BASE_BOOKING_KEYS = new Set([
   "owner_pm_relationship_id",
   "source_file_id",
 ]);
+
+function cellString(v: unknown): string {
+  if (v == null) return "";
+  return typeof v === "string" ? v : String(v);
+}
+
+/** Case-insensitive map: first wins (stable order from sorted properties). */
+function buildPropertyNameLookup(properties: PropertyOption[]): Map<string, PropertyOption> {
+  const sorted = [...properties].sort((a, b) => {
+    const na = (a.property_name ?? "").localeCompare(b.property_name ?? "");
+    if (na !== 0) return na;
+    return (a.address_line1 ?? "").localeCompare(b.address_line1 ?? "");
+  });
+  const map = new Map<string, PropertyOption>();
+  for (const p of sorted) {
+    const name = (p.property_name ?? "").trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (!map.has(key)) map.set(key, p);
+  }
+  return map;
+}
 
 function rowToPayload(
   headers: string[],
@@ -141,105 +173,203 @@ function rowToPayload(
   return payload;
 }
 
+function parseCsvForPreview(
+  normalizedText: string,
+  nameLookup: Map<string, PropertyOption>
+): Omit<ParsedUploadState, "fileName"> | { error: string } {
+  const papaResult = Papa.parse<Record<string, unknown>>(normalizedText, {
+    header: true,
+    skipEmptyLines: "greedy",
+    dynamicTyping: false,
+  });
+
+  const headers =
+    papaResult.meta.fields?.filter((h): h is string => typeof h === "string") ??
+    [];
+
+  if (headers.length === 0) {
+    return { error: "CSV has no header row." };
+  }
+
+  const rawRows = papaResult.data.filter(
+    (r) => r && typeof r === "object" && Object.keys(r).length > 0
+  );
+
+  const unitCounts = new Map<string, number>();
+  const csvReservationIds = new Set<string>();
+
+  for (const rowObj of rawRows) {
+    const unitRaw = cellString(rowObj["Unit"]).trim();
+    const unitLabel = unitRaw || "(empty Unit)";
+    unitCounts.set(unitLabel, (unitCounts.get(unitLabel) ?? 0) + 1);
+
+    const resRaw = cellString(rowObj["Reservation Id"]).trim();
+    if (resRaw) csvReservationIds.add(resRaw);
+  }
+
+  const unknownUnits: string[] = [];
+  for (const unitLabel of unitCounts.keys()) {
+    if (unitLabel === "(empty Unit)") {
+      unknownUnits.push(unitLabel);
+      continue;
+    }
+    if (!nameLookup.has(unitLabel.toLowerCase())) {
+      unknownUnits.push(unitLabel);
+    }
+  }
+  unknownUnits.sort((a, b) => a.localeCompare(b));
+
+  return {
+    headers,
+    rawRows,
+    unitCounts,
+    unknownUnits,
+    csvReservationIds,
+  };
+}
+
 export default function BookingsUploadPage() {
   const router = useRouter();
   const supabase = createClient();
-  const [properties, setProperties] = useState<PropertyOption[]>([]);
-  const [propertyId, setPropertyId] = useState("");
-  const [fileName, setFileName] = useState<string | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loadingProps, setLoadingProps] = useState(true);
-  const [uploading, setUploading] = useState(false);
-  const [activeOwnerPmRelationshipId, setActiveOwnerPmRelationshipId] =
-    useState<string | null>(null);
 
-  const fetchActiveOwnerPmRelationshipId = useCallback(
-    async (pid: string): Promise<string | null> => {
-      const { data, error: relErr } = await supabase
-        .from("owner_pm_relationships")
-        .select("id")
-        .eq("property_id", pid)
-        .eq("active", true)
-        .order("start_date", { ascending: false, nullsFirst: false })
-        .limit(1);
-      if (relErr) {
-        console.error(relErr);
-        return null;
-      }
-      const rid = data?.[0]?.id;
-      return rid != null && String(rid).trim() !== "" ? String(rid) : null;
-    },
-    [supabase]
+  const [properties, setProperties] = useState<PropertyOption[]>([]);
+  const [pmList, setPmList] = useState<PmOption[]>([]);
+  const [selectedPmId, setSelectedPmId] = useState("");
+  const [loadingProps, setLoadingProps] = useState(true);
+  const [loadingPms, setLoadingPms] = useState(true);
+
+  const [parsed, setParsed] = useState<ParsedUploadState | null>(null);
+  const [fileInputKey, setFileInputKey] = useState(0);
+
+  const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+
+  const nameLookup = useMemo(
+    () => buildPropertyNameLookup(properties),
+    [properties]
   );
 
-  const loadProperties = useCallback(async () => {
+  const unitSummaryLines = useMemo(() => {
+    if (!parsed) return [];
+    const lines: string[] = [];
+    const entries = [...parsed.unitCounts.entries()].sort((a, b) =>
+      a[0].localeCompare(b[0])
+    );
+    for (const [unit, count] of entries) {
+      lines.push(`${unit}: ${count} row${count === 1 ? "" : "s"}`);
+    }
+    return lines;
+  }, [parsed]);
+
+  const loadPropertiesAndPms = useCallback(async () => {
     setLoadingProps(true);
+    setLoadingPms(true);
+    setError(null);
+
     const {
       data: { user },
     } = await supabase.auth.getUser();
     if (!user) {
       setLoadingProps(false);
+      setLoadingPms(false);
       return;
     }
-    const { data, error: qErr } = await supabase
-      .from("properties")
-      .select("id, property_name, address_line1")
-      .eq("owner_id", user.id)
-      .order("property_name", { ascending: true, nullsFirst: false })
-      .order("address_line1", { ascending: true, nullsFirst: false });
+
+    const [propRes, pmRes] = await Promise.all([
+      supabase
+        .from("properties")
+        .select("id, property_name, address_line1")
+        .eq("owner_id", user.id)
+        .order("property_name", { ascending: true, nullsFirst: false })
+        .order("address_line1", { ascending: true, nullsFirst: false }),
+      supabase
+        .from("pm_profiles")
+        .select("id, company_name")
+        .contains("markets", [MARKET])
+        .order("company_name", { ascending: true }),
+    ]);
+
     setLoadingProps(false);
-    if (qErr) {
-      setError(qErr.message);
+    setLoadingPms(false);
+
+    if (propRes.error) {
+      setError(propRes.error.message);
       return;
     }
-    const list = data ?? [];
+    const list = propRes.data ?? [];
     if (list.length === 0) {
       router.push("/onboarding");
       return;
     }
     setProperties(list);
-    if (list.length === 1) setPropertyId(list[0].id);
+
+    if (pmRes.error) {
+      setError(pmRes.error.message);
+      return;
+    }
+    setPmList(pmRes.data ?? []);
   }, [router, supabase]);
 
   useEffect(() => {
-    loadProperties();
-  }, [loadProperties]);
+    loadPropertiesAndPms();
+  }, [loadPropertiesAndPms]);
 
   useEffect(() => {
-    if (!propertyId) {
-      setActiveOwnerPmRelationshipId(null);
-      return;
-    }
-    setActiveOwnerPmRelationshipId(null);
-    let cancelled = false;
-    fetchActiveOwnerPmRelationshipId(propertyId).then((id) => {
-      if (!cancelled) setActiveOwnerPmRelationshipId(id);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [propertyId, fetchActiveOwnerPmRelationshipId]);
+    setParsed(null);
+    setStatus(null);
+    setFileInputKey((k) => k + 1);
+  }, [selectedPmId]);
 
-  async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
+  async function onFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
     setError(null);
     setStatus(null);
     const file = e.target.files?.[0];
     if (!file) return;
-    setFileName(file.name);
 
-    if (!propertyId) {
-      setError("Select a property first.");
+    if (!selectedPmId) {
+      setError("Select your property manager first.");
       e.target.value = "";
       return;
     }
+
+    const text = await file.text();
+    const normalized = text.replace(/^\uFEFF/, "");
+    const preview = parseCsvForPreview(normalized, nameLookup);
+
+    if ("error" in preview) {
+      setError(preview.error);
+      e.target.value = "";
+      return;
+    }
+
+    setParsed({
+      fileName: file.name,
+      ...preview,
+    });
+    e.target.value = "";
+  }
+
+  async function onConfirmUpload() {
+    if (!parsed || !selectedPmId) return;
+
+    setError(null);
+    setStatus(null);
+    setUploading(true);
 
     const {
       data: { user },
     } = await supabase.auth.getUser();
     if (!user) {
+      setUploading(false);
       setError("You must be signed in.");
-      e.target.value = "";
+      return;
+    }
+
+    const defaultPropertyId = properties[0]?.id ?? "";
+    if (!defaultPropertyId) {
+      setUploading(false);
+      setError("No property on file.");
       return;
     }
 
@@ -247,177 +377,246 @@ export default function BookingsUploadPage() {
       .from("upload_files")
       .insert({
         owner_id: user.id,
-        property_id: propertyId,
-        file_name: file.name,
-        storage_url: file.name,
+        property_id: defaultPropertyId,
+        file_name: parsed.fileName,
+        storage_url: parsed.fileName,
       })
       .select("id")
       .single();
 
     if (sourceFileErr || !sourceFileRow) {
+      setUploading(false);
       setError(
         sourceFileErr?.message ??
-          "Could not create upload_files row. Check table columns (e.g. owner_id, file_name, storage_url, property_id) and RLS."
+          "Could not create upload_files row. Check RLS and columns."
       );
-      e.target.value = "";
       return;
     }
 
     const sourceFileId = sourceFileRow.id as string;
 
-    const text = await file.text();
-    const normalized = text.replace(/^\uFEFF/, "");
+    const { data: relRows, error: relErr } = await supabase
+      .from("owner_pm_relationships")
+      .select("id, property_id, start_date")
+      .eq("owner_id", user.id)
+      .eq("pm_id", selectedPmId)
+      .eq("active", true);
 
-    const papaResult = Papa.parse<Record<string, unknown>>(normalized, {
-      header: true,
-      skipEmptyLines: "greedy",
-      dynamicTyping: false,
-    });
-
-    const rawRows = papaResult.data;
-    console.log("Raw CSV row sample:", rawRows[0]);
-
-    const headers = papaResult.meta.fields?.filter(
-      (h): h is string => typeof h === "string"
-    ) ?? [];
-
-    console.log("[bookings upload] parsed CSV headers:", headers);
-    console.log(
-      "[bookings upload] header count:",
-      headers.length,
-      "data row count:",
-      rawRows.length
-    );
-    const known = new Set([...Object.keys(BOOKINGS_CSV_MAP), "Type"]);
-    const unmatched = headers.filter((h) => !known.has(h.trim()));
-    const missingFromCsv = [...known].filter((k) => !headers.map((h) => h.trim()).includes(k));
-    if (unmatched.length)
-      console.warn("[bookings upload] CSV headers with no DB map:", unmatched);
-    if (missingFromCsv.length)
-      console.warn(
-        "[bookings upload] expected columns not present in CSV:",
-        missingFromCsv
-      );
-
-    if (papaResult.errors.length > 0) {
-      console.warn("[bookings upload] Papa Parse errors:", papaResult.errors);
-    }
-
-    if (headers.length === 0) {
-      setError("CSV has no header row.");
-      e.target.value = "";
+    if (relErr) {
+      setUploading(false);
+      setError(relErr.message);
       return;
     }
 
-    const payloads: Record<string, unknown>[] = [];
-    for (const rowObj of rawRows) {
-      const cells = headers.map((h) => {
-        const v = rowObj[h];
-        if (v == null) return "";
-        return typeof v === "string" ? v : String(v);
+    const relByProperty = new Map<string, string>();
+    const relList = relRows ?? [];
+    const byProp = new Map<string, typeof relList>();
+    for (const r of relList) {
+      const pid = r.property_id as string;
+      if (!byProp.has(pid)) byProp.set(pid, []);
+      byProp.get(pid)!.push(r);
+    }
+    for (const [pid, rows] of byProp) {
+      const sorted = [...rows].sort((a, b) => {
+        const da = a.start_date ? String(a.start_date) : "";
+        const db = b.start_date ? String(b.start_date) : "";
+        return db.localeCompare(da);
       });
-      const p = rowToPayload(
-        headers,
-        cells,
-        propertyId,
-        activeOwnerPmRelationshipId,
-        sourceFileId
-      );
-      if (p) payloads.push(p);
+      const first = sorted[0];
+      if (first?.id) relByProperty.set(pid, String(first.id));
     }
 
-    if (payloads.length === 0) {
-      setError("No rows matched known columns. Check CSV headers.");
-      e.target.value = "";
-      return;
-    }
+    const relationshipIds = [...new Set(relByProperty.values())];
 
-    const { data: existingRows, error: existingErr } = await supabase
-      .from("bookings")
-      .select("source_reservation_id")
-      .eq("property_id", propertyId);
+    const existingReservationIds = new Set<string>();
+    if (relationshipIds.length > 0) {
+      const { data: existingBookings, error: exErr } = await supabase
+        .from("bookings")
+        .select("source_reservation_id")
+        .in("owner_pm_relationship_id", relationshipIds);
 
-    if (existingErr) {
-      setError(existingErr.message);
-      e.target.value = "";
-      return;
-    }
-
-    const existingIds = new Set<string>();
-    for (const row of existingRows ?? []) {
-      const id = row.source_reservation_id;
-      if (id != null && String(id).trim() !== "") {
-        existingIds.add(String(id).trim());
-      }
-    }
-
-    const toInsert: Record<string, unknown>[] = [];
-    let skippedDuplicates = 0;
-    for (const p of payloads) {
-      const raw = p.source_reservation_id;
-      const key =
-        raw != null && String(raw).trim() !== ""
-          ? String(raw).trim()
-          : null;
-      if (key != null) {
-        if (existingIds.has(key)) {
-          skippedDuplicates += 1;
-          continue;
-        }
-        existingIds.add(key);
-      }
-      toInsert.push(p);
-    }
-
-    if (toInsert.length === 0) {
-      setStatus(
-        skippedDuplicates > 0
-          ? `No new rows to import. Skipped ${skippedDuplicates} duplicate reservation id(s) already on file for this property.`
-          : "No new rows to import."
-      );
-      e.target.value = "";
-      return;
-    }
-
-    setUploading(true);
-    console.log("First row payload:", toInsert[0]);
-    const chunk = 40;
-    let inserted = 0;
-    for (let i = 0; i < toInsert.length; i += chunk) {
-      const slice = toInsert.slice(i, i + chunk);
-      const { error: insErr } = await supabase.from("bookings").insert(slice);
-      if (insErr) {
+      if (exErr) {
         setUploading(false);
-        setError(insErr.message);
-        e.target.value = "";
+        setError(exErr.message);
         return;
       }
-      inserted += slice.length;
+      for (const row of existingBookings ?? []) {
+        const id = row.source_reservation_id;
+        if (id != null && String(id).trim() !== "") {
+          existingReservationIds.add(String(id).trim());
+        }
+      }
     }
-    setUploading(false);
-    const parts: string[] = [`Inserted ${inserted} new booking row(s).`];
-    if (skippedDuplicates > 0) {
-      parts.push(
-        `Skipped ${skippedDuplicates} duplicate row(s) (reservation id already exists for this property).`
+
+    const { headers, rawRows } = parsed;
+    let rowsUnmatchedUnit = 0;
+    let rowsSkippedOther = 0;
+    const payloads: Record<string, unknown>[] = [];
+
+    for (const rowObj of rawRows) {
+      const cells = headers.map((h) => cellString(rowObj[h]));
+      const row: Record<string, string> = {};
+      headers.forEach((h, i) => {
+        row[h] = cells[i] ?? "";
+      });
+
+      const unitRaw = (row["Unit"] ?? "").trim();
+      if (!unitRaw) {
+        rowsUnmatchedUnit += 1;
+        console.warn("[bookings upload] unmatched row (empty Unit)", row);
+        continue;
+      }
+
+      const prop = nameLookup.get(unitRaw.toLowerCase());
+      if (!prop) {
+        rowsUnmatchedUnit += 1;
+        console.warn("[bookings upload] unmatched Unit:", unitRaw, row);
+        continue;
+      }
+
+      const relId = relByProperty.get(prop.id) ?? null;
+      if (!relId) {
+        rowsSkippedOther += 1;
+        console.warn(
+          "[bookings upload] no active PM relationship for property",
+          prop.id,
+          row
+        );
+        continue;
+      }
+
+      const p = rowToPayload(headers, cells, prop.id, relId, sourceFileId);
+      if (!p) {
+        rowsSkippedOther += 1;
+        continue;
+      }
+
+      const resKey = p.source_reservation_id;
+      if (resKey == null || String(resKey).trim() === "") {
+        rowsSkippedOther += 1;
+        console.warn("[bookings upload] missing Reservation Id", row);
+        continue;
+      }
+
+      const st = String(p.status ?? "").trim().toLowerCase();
+      if (st && st !== "cancelled") {
+        p.cancelled_at = null;
+      }
+
+      payloads.push(p);
+    }
+
+    const dedupedByReservation = new Map<string, Record<string, unknown>>();
+    for (const p of payloads) {
+      const k = String(p.source_reservation_id).trim();
+      dedupedByReservation.set(k, p);
+    }
+    const uniquePayloads = [...dedupedByReservation.values()];
+
+    if (uniquePayloads.length === 0) {
+      setUploading(false);
+      setError(
+        "No rows could be imported. Check Unit names, reservation IDs, and that each property has an active relationship with the selected PM."
       );
+      return;
     }
-    setStatus(parts.join(" "));
-    e.target.value = "";
+
+    let inserted = 0;
+    let updated = 0;
+    for (const p of uniquePayloads) {
+      const key = String(p.source_reservation_id).trim();
+      if (existingReservationIds.has(key)) updated += 1;
+      else inserted += 1;
+    }
+
+    const chunkSize = 40;
+    for (let i = 0; i < uniquePayloads.length; i += chunkSize) {
+      const slice = uniquePayloads.slice(i, i + chunkSize);
+      const { error: upErr } = await supabase.from("bookings").upsert(slice, {
+        onConflict: "source_reservation_id",
+      });
+      if (upErr) {
+        setUploading(false);
+        setError(upErr.message);
+        return;
+      }
+    }
+
+    const cancelledAt = new Date().toISOString();
+    let cancellationsDetected = 0;
+
+    if (relationshipIds.length > 0) {
+      const { data: openBookings, error: openErr } = await supabase
+        .from("bookings")
+        .select("id, source_reservation_id")
+        .in("owner_pm_relationship_id", relationshipIds)
+        .neq("status", "cancelled");
+
+      if (openErr) {
+        setUploading(false);
+        setError(openErr.message);
+        return;
+      }
+
+      const toCancelIds: string[] = [];
+      for (const b of openBookings ?? []) {
+        const sid = b.source_reservation_id;
+        const s = sid != null ? String(sid).trim() : "";
+        if (!s || parsed.csvReservationIds.has(s)) continue;
+        toCancelIds.push(String(b.id));
+      }
+
+      cancellationsDetected = toCancelIds.length;
+
+      const cancelChunk = 80;
+      for (let i = 0; i < toCancelIds.length; i += cancelChunk) {
+        const ids = toCancelIds.slice(i, i + cancelChunk);
+        const { error: cancelErr } = await supabase
+          .from("bookings")
+          .update({ status: "cancelled", cancelled_at: cancelledAt })
+          .in("id", ids);
+        if (cancelErr) {
+          setUploading(false);
+          setError(cancelErr.message);
+          return;
+        }
+      }
+    }
+
+    setUploading(false);
+    setParsed(null);
+    setFileInputKey((k) => k + 1);
+
+    const parts = [
+      `${inserted} new booking${inserted === 1 ? "" : "s"} added`,
+      `${updated} updated`,
+      `${cancellationsDetected} cancellation${cancellationsDetected === 1 ? "" : "s"} detected`,
+      `${rowsUnmatchedUnit} row${rowsUnmatchedUnit === 1 ? "" : "s"} unmatched`,
+    ];
+    let msg = parts.join(", ") + ".";
+    if (rowsSkippedOther > 0) {
+      msg += ` ${rowsSkippedOther} row${rowsSkippedOther === 1 ? "" : "s"} skipped (missing reservation id or no PM link).`;
+    }
+    setStatus(msg);
+  }
+
+  function onClearPreview() {
+    setParsed(null);
+    setError(null);
+    setFileInputKey((k) => k + 1);
   }
 
   return (
-    <div className="max-w-xl space-y-6">
+    <div className="max-w-2xl space-y-6">
       <div>
         <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-50">
-          Upload bookings (CSV)
+          Upload booking history (CSV)
         </h1>
         <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-          CSV columns are mapped to booking fields;{" "}
-          <span className="font-medium">Booked Date</span> is sent as{" "}
-          <code className="rounded bg-zinc-100 px-1 dark:bg-zinc-800">
-            booked_date
-          </code>{" "}
-          (YYYY-MM-DD).
+          Upload your PM&apos;s full export in one file. Each import replaces the
+          in-app picture for this PM: reservations missing from the file are
+          marked cancelled. Units in the CSV are matched to your properties by
+          name (case-insensitive).
         </p>
       </div>
 
@@ -437,24 +636,24 @@ export default function BookingsUploadPage() {
 
       <div>
         <label
-          htmlFor="property"
+          htmlFor="pm"
           className="block text-sm font-medium text-zinc-700 dark:text-zinc-300"
         >
-          Property
+          Property manager
         </label>
         <select
-          id="property"
-          value={propertyId}
-          onChange={(e) => setPropertyId(e.target.value)}
-          disabled={loadingProps}
+          id="pm"
+          value={selectedPmId}
+          onChange={(e) => setSelectedPmId(e.target.value)}
+          disabled={loadingPms || uploading}
           className="mt-1.5 block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50"
         >
           <option value="">
-            {loadingProps ? "Loading…" : "Select property"}
+            {loadingPms ? "Loading…" : "Select PM"}
           </option>
-          {properties.map((p) => (
-            <option key={p.id} value={p.id}>
-              {propertyOptionLabel(p)}
+          {pmList.map((pm) => (
+            <option key={pm.id} value={pm.id}>
+              {pm.company_name}
             </option>
           ))}
         </select>
@@ -465,20 +664,96 @@ export default function BookingsUploadPage() {
           htmlFor="csv"
           className="block text-sm font-medium text-zinc-700 dark:text-zinc-300"
         >
-          CSV file
+          Combined CSV
         </label>
         <input
+          key={fileInputKey}
           id="csv"
           type="file"
           accept=".csv,text/csv"
-          disabled={uploading || !propertyId}
-          onChange={onFile}
+          disabled={uploading || !selectedPmId || loadingProps}
+          onChange={onFileSelected}
           className="mt-1.5 block w-full text-sm text-zinc-600 file:mr-3 file:rounded-lg file:border-0 file:bg-zinc-900 file:px-3 file:py-2 file:text-sm file:font-medium file:text-white dark:text-zinc-400 dark:file:bg-zinc-100 dark:file:text-zinc-900"
         />
-        {fileName ? (
-          <p className="mt-1 text-xs text-zinc-500">Last file: {fileName}</p>
-        ) : null}
+        {parsed ? (
+          <p className="mt-1 text-xs text-zinc-500">
+            Selected: {parsed.fileName} — preview below; confirm to apply.
+          </p>
+        ) : (
+          <p className="mt-1 text-xs text-zinc-500">
+            Columns include Reservation Id, Unit, Type, Status, dates, Income,
+            etc.
+          </p>
+        )}
       </div>
+
+      {parsed ? (
+        <div className="space-y-4 rounded-xl border border-zinc-200 bg-zinc-50/80 p-4 dark:border-zinc-700 dark:bg-zinc-900/40">
+          <div>
+            <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+              Preview
+            </h2>
+            <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
+              {parsed.rawRows.length} data row
+              {parsed.rawRows.length === 1 ? "" : "s"} ·{" "}
+              {parsed.csvReservationIds.size} distinct reservation id
+              {parsed.csvReservationIds.size === 1 ? "" : "s"}
+            </p>
+          </div>
+
+          <div>
+            <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+              Units in file
+            </h3>
+            <ul className="mt-2 list-inside list-disc space-y-1 text-sm text-zinc-800 dark:text-zinc-200">
+              {unitSummaryLines.map((line, idx) => (
+                <li key={`${idx}-${line}`}>{line}</li>
+              ))}
+            </ul>
+          </div>
+
+          {parsed.unknownUnits.length > 0 ? (
+            <div
+              role="status"
+              className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-100"
+            >
+              <p className="font-medium">Unit name warning</p>
+              <p className="mt-1 text-xs opacity-90">
+                These Unit values do not match any of your property names (after
+                trimming). Rows for them will be skipped on import:
+              </p>
+              <ul className="mt-2 list-inside list-disc text-xs">
+                {parsed.unknownUnits.map((u) => (
+                  <li key={u}>{u}</li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <p className="text-xs text-emerald-800 dark:text-emerald-200">
+              All distinct Unit values match a property name in your portfolio.
+            </p>
+          )}
+
+          <div className="flex flex-wrap gap-2 pt-1">
+            <button
+              type="button"
+              disabled={uploading}
+              onClick={onConfirmUpload}
+              className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
+            >
+              {uploading ? "Importing…" : "Confirm import"}
+            </button>
+            <button
+              type="button"
+              disabled={uploading}
+              onClick={onClearPreview}
+              className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-800 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
