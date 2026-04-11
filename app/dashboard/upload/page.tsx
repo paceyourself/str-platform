@@ -217,15 +217,20 @@ async function triggerPostOwnerStaySurveys(
     owner_pm_relationship_id: string | null;
   };
 
+  const cutoffDate = new Date();
+  cutoffDate.setDate(cutoffDate.getDate() - 90);
+  const cutoffStr = `${cutoffDate.getFullYear()}-${String(cutoffDate.getMonth() + 1).padStart(2, "0")}-${String(cutoffDate.getDate()).padStart(2, "0")}`;
+
   const candidates = (bookingRows as BRow[]).filter((b) => {
     if (b.block_type !== "owner_stay") return false;
     const co = b.check_out ? String(b.check_out).slice(0, 10) : "";
     if (!co || co >= todayStr) return false;
+    if (co < cutoffStr) return false;
     if (b.survey_triggered === true) return false;
     if (!b.owner_pm_relationship_id) return false;
     return true;
   });
-
+  
   if (candidates.length === 0) return 0;
 
   const relIds = [
