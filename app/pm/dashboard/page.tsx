@@ -81,6 +81,7 @@ export default function PmDashboardPage() {
   const [inboxLoading, setInboxLoading] = useState(false);
   const [inboxError, setInboxError] = useState<string | null>(null);
   const [actingId, setActingId] = useState<string | null>(null);
+  const [resolutionNotes, setResolutionNotes] = useState<Record<string, string>>({});
 
   const loadProfile = useCallback(async () => {
     setLoading(true);
@@ -120,7 +121,7 @@ export default function PmDashboardPage() {
         .from("tickets")
         .select(
           `
-          id,
+          id, 
           queue,
           title,
           description,
@@ -196,11 +197,9 @@ export default function PmDashboardPage() {
   };
 
   const resolveTicket = async (id: string) => {
-    const note = window.prompt("Resolution note (required):");
-    if (note == null) return;
-    const trimmed = note.trim();
-    if (!trimmed) {
-      alert("Please enter a resolution note.");
+    const note = resolutionNotes[id]?.trim();
+    if (!note) {
+      alert("Please enter a resolution note before resolving.");
       return;
     }
     setActingId(id);
@@ -209,7 +208,7 @@ export default function PmDashboardPage() {
       .update({
         status: "resolved",
         resolved_at: new Date().toISOString(),
-        resolution_note: trimmed,
+        resolution_note: note,
       })
       .eq("id", id)
       .in("status", ["open", "acknowledged"]);
@@ -312,21 +311,45 @@ export default function PmDashboardPage() {
                         key={t.id}
                         className="flex flex-col gap-2 px-3 py-3 sm:flex-row sm:items-start sm:justify-between"
                       >
-                        <div className="min-w-0 flex-1">
-                          <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                            {(t.queue && QUEUE_LABELS[t.queue]) || t.queue} ·{" "}
-                            {propertyNameFromTicket(t)}
-                          </p>
-                          <p className="mt-0.5 font-medium text-zinc-900 dark:text-zinc-50">
-                            {t.title}
-                          </p>
-                          <p className="mt-1 text-xs text-zinc-500">
-                            {new Date(t.created_at).toLocaleString(undefined, {
-                              dateStyle: "medium",
-                              timeStyle: "short",
-                            })}
-                          </p>
-                        </div>
+<div className="min-w-0 flex-1">
+  <p className="text-xs text-zinc-500 dark:text-zinc-400">
+    {(t.queue && QUEUE_LABELS[t.queue]) || t.queue} ·{" "}
+    {propertyNameFromTicket(t)}
+  </p>
+  <p className="mt-0.5 font-medium text-zinc-900 dark:text-zinc-50">
+    {t.title}
+  </p>
+  {t.description && (
+    <p className="mt-1 text-sm text-zinc-700 dark:text-zinc-300">
+      {t.description}
+    </p>
+  )}
+  <p className="mt-1 text-xs text-zinc-500">
+    {new Date(t.created_at).toLocaleString(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    })}
+  </p>
+  {t.resolution_note && (
+    <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+      Resolution: {t.resolution_note}
+    </p>
+  )}
+  {(t.status === "open" || t.status === "acknowledged") && (
+    <textarea
+      rows={2}
+      placeholder="Resolution note (required to resolve)"
+      value={resolutionNotes[t.id] ?? ""}
+      onChange={(e) =>
+        setResolutionNotes((prev) => ({
+          ...prev,
+          [t.id]: e.target.value,
+        }))
+      }
+      className="mt-2 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100"
+    />
+  )}
+</div>
                         <div className="flex shrink-0 flex-wrap gap-2">
                           {t.status === "open" ? (
                             <button
