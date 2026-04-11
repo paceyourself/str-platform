@@ -680,7 +680,7 @@ export default function BookingsUploadPage() {
         .slice(i, i + chunkSize)
         .map((row) => bookingPayloadForUpsert(row as Record<string, unknown>));
       const { error: upErr } = await supabase.from("bookings").upsert(slice, {
-        onConflict: "source_reservation_id",
+        onConflict: "source_reservation_id,property_id",
       });
       if (upErr) {
         setUploading(false);
