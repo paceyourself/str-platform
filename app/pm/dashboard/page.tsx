@@ -48,6 +48,21 @@ type InboxTicket = {
     | null;
 };
 
+type PmSentRequest = {
+  id: string;
+  request_type: string | null;
+  title: string;
+  description: string | null;
+  dollar_amount: number | null;
+  status: string;
+  created_at: string;
+  proposed_vendor: string | null;
+  owner_pm_relationships?:
+    | InboxOwnerPmRelEmbed
+    | InboxOwnerPmRelEmbed[]
+    | null;
+};
+
 function propertyNameFromTicket(t: InboxTicket): string {
   const rel = t.owner_pm_relationships;
   const r = rel == null ? null : Array.isArray(rel) ? rel[0] : rel;
@@ -82,6 +97,9 @@ export default function PmDashboardPage() {
   const [inboxError, setInboxError] = useState<string | null>(null);
   const [actingId, setActingId] = useState<string | null>(null);
   const [resolutionNotes, setResolutionNotes] = useState<Record<string, string>>({});
+  const [sentRequests, setSentRequests] = useState<PmSentRequest[]>([]);
+  const [sentLoading, setSentLoading] = useState(false);
+  const [sentError, setSentError] = useState<string | null>(null);
 
   const loadProfile = useCallback(async () => {
     setLoading(true);
@@ -148,6 +166,42 @@ export default function PmDashboardPage() {
     [supabase]
   );
 
+  const loadSentRequests = useCallback(
+    async (pmId: string) => {
+      setSentLoading(true);
+      setSentError(null);
+      const { data, error } = await supabase
+        .from("tickets")
+        .select(
+          `
+          id,
+          request_type,
+          title,
+          description,
+          dollar_amount,
+          status,
+          created_at,
+          proposed_vendor,
+          owner_pm_relationships (
+            properties ( property_name, address_line1 )
+          )
+        `
+        )
+        .eq("pm_id", pmId)
+        .eq("direction", "pm_to_owner")
+        .order("created_at", { ascending: false });
+  
+      setSentLoading(false);
+      if (error) {
+        setSentError(error.message);
+        setSentRequests([]);
+        return;
+      }
+      setSentRequests((data as PmSentRequest[]) ?? []);
+    },
+    [supabase]
+  );
+
   useEffect(() => {
     loadProfile();
   }, [loadProfile]);
@@ -155,11 +209,13 @@ export default function PmDashboardPage() {
   useEffect(() => {
     if (profile?.profile_claimed && profile.id) {
       loadInbox(profile.id);
+      loadSentRequests(profile.id);
     } else {
       setInboxTickets([]);
+      setSentRequests([]);
     }
-  }, [profile, loadInbox]);
-
+  }, [profile, loadInbox, loadSentRequests]);
+  
   const groupedTickets = useMemo(() => {
     const map = new Map<string, InboxTicket[]>();
     for (const s of STATUS_SECTION_ORDER) {
@@ -381,6 +437,71 @@ export default function PmDashboardPage() {
           </div>
         )}
       </section>
+
+      <section className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+  <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+    Requests sent to owners
+  </h2>
+  <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+    Maintenance, vendor, and guest decision requests you have submitted.
+  </p>
+  {sentError ? (
+    <p className="mt-2 text-sm text-red-600 dark:text-red-400">{sentError}</p>
+  ) : null}
+  {sentLoading ? (
+    <p className="mt-3 text-sm text-zinc-500">Loading…</p>
+  ) : sentRequests.length === 0 ? (
+    <p className="mt-3 text-sm text-zinc-600 dark:text-zinc-400">
+      No requests sent yet.
+    </p>
+  ) : (
+    <ul className="mt-4 divide-y divide-zinc-200 rounded-lg border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
+      {sentRequests.map((r) => {
+        const prop = propertyNameFromTicket(r as unknown as InboxTicket);
+        return (
+          <li key={r.id} className="flex flex-col gap-2 px-3 py-3">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0 flex-1">
+                <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                  {r.request_type?.replace(/_/g, " ") ?? "Request"} · {prop}
+                  {r.dollar_amount != null ? ` · $${Number(r.dollar_amount).toLocaleString()}` : ""}
+                </p>
+                <p className="mt-0.5 font-medium text-zinc-900 dark:text-zinc-50">
+                  {r.title}
+                </p>
+                {r.description && (
+                  <p className="mt-1 text-sm text-zinc-700 dark:text-zinc-300">
+                    {r.description}
+                  </p>
+                )}
+                {r.proposed_vendor && (
+                  <p className="mt-1 text-xs text-zinc-500">
+                    Vendor: {r.proposed_vendor}
+                  </p>
+                )}
+                <p className="mt-1 text-xs text-zinc-500">
+                  {new Date(r.created_at).toLocaleString(undefined, {
+                    dateStyle: "medium",
+                    timeStyle: "short",
+                  })}
+                </p>
+              </div>
+              <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${
+                r.status === "acknowledged"
+                  ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-200"
+                  : r.status === "resolved"
+                  ? "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
+                  : "bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-200"
+              }`}>
+                {r.status === "acknowledged" ? "Approved" : r.status === "resolved" ? "Declined" : "Pending"}
+              </span>
+            </div>
+          </li>
+        );
+      })}
+    </ul>
+  )}
+</section>
 
       <div className="grid gap-4 sm:grid-cols-2">
         <section className="rounded-xl border border-zinc-200 bg-zinc-50/80 p-4 dark:border-zinc-800 dark:bg-zinc-900/40">
