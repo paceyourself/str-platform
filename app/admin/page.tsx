@@ -1,7 +1,7 @@
 "use client";
 
 import { createClient } from "@/lib/supabase";
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 
 type Review = {
   id: string;
