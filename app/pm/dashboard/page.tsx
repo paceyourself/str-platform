@@ -38,7 +38,9 @@ type InboxTicket = {
   id: string;
   queue: string | null;
   title: string;
+  description: string | null;
   status: string;
+  resolution_note: string | null;
   created_at: string;
   owner_pm_relationships?:
     | InboxOwnerPmRelEmbed
@@ -121,7 +123,9 @@ export default function PmDashboardPage() {
           id,
           queue,
           title,
+          description,
           status,
+          resolution_note,
           created_at,
           owner_pm_relationships (
             properties ( property_name, address_line1 )
