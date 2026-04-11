@@ -21,18 +21,29 @@ const QUEUE_LABELS: Record<string, string> = {
   listing_management: "Listing management",
 };
 
+/** PostgREST embeds; optional fields align with Supabase client inference. */
+type InboxPropertyEmbed = {
+  property_name?: string | null;
+  address_line1?: string | null;
+};
+
+type InboxOwnerPmRelEmbed = {
+  properties?:
+    | InboxPropertyEmbed
+    | InboxPropertyEmbed[]
+    | null;
+};
+
 type InboxTicket = {
   id: string;
   queue: string | null;
   title: string;
   status: string;
   created_at: string;
-  owner_pm_relationships: {
-    properties: {
-      property_name: string | null;
-      address_line1: string | null;
-    } | null;
-  } | null;
+  owner_pm_relationships?:
+    | InboxOwnerPmRelEmbed
+    | InboxOwnerPmRelEmbed[]
+    | null;
 };
 
 function propertyNameFromTicket(t: InboxTicket): string {

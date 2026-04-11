@@ -64,19 +64,34 @@ const PM_REQUEST_TYPE_LABELS: Record<string, string> = {
   owner_action_required: "Owner action required",
 };
 
+/** Nested embed from PostgREST; fields optional so query rows align with Supabase client inference. */
+type PmRequestPropertiesEmbed = {
+  property_name?: string | null;
+};
+
+type PmRequestOwnerPmRelEmbed = {
+  contract_maintenance_threshold?: number | string | null;
+  properties?:
+    | PmRequestPropertiesEmbed
+    | PmRequestPropertiesEmbed[]
+    | null;
+};
+
+/** Shape of `tickets` rows from loadPmRequests select (pm_to_owner). */
 type PmRequestTicketRow = {
   id: string;
   request_type: string | null;
   title: string;
-  description: string;
+  description: string | null;
   dollar_amount: number | string | null;
   status: string;
   created_at: string;
   proposed_vendor: string | null;
-  owner_pm_relationships: {
-    contract_maintenance_threshold: number | string | null;
-    properties: { property_name: string | null } | null;
-  } | null;
+  direction: string;
+  owner_pm_relationships?:
+    | PmRequestOwnerPmRelEmbed
+    | PmRequestOwnerPmRelEmbed[]
+    | null;
 };
 
 function pmRequestPropertyName(t: PmRequestTicketRow): string {
@@ -498,6 +513,7 @@ export default function DashboardPage() {
         status,
         created_at,
         proposed_vendor,
+        direction,
         owner_pm_relationships (
           contract_maintenance_threshold,
           properties ( property_name )
@@ -923,7 +939,7 @@ export default function DashboardPage() {
                     {t.title}
                   </p>
                   <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-                    {t.description}
+                    {t.description ?? ""}
                   </p>
                   {t.proposed_vendor ? (
                     <p className="mt-2 text-xs text-zinc-500">
