@@ -57,6 +57,50 @@ type BenchmarkRow = {
   benchmark_revpar: number | string | null;
 };
 
+const PM_REQUEST_TYPE_LABELS: Record<string, string> = {
+  maintenance_work_order: "Maintenance work order",
+  vendor_selection: "Vendor selection",
+  guest_decision: "Guest decision",
+  owner_action_required: "Owner action required",
+};
+
+type PmRequestTicketRow = {
+  id: string;
+  request_type: string | null;
+  title: string;
+  description: string;
+  dollar_amount: number | string | null;
+  status: string;
+  created_at: string;
+  proposed_vendor: string | null;
+  owner_pm_relationships: {
+    contract_maintenance_threshold: number | string | null;
+    properties: { property_name: string | null } | null;
+  } | null;
+};
+
+function pmRequestPropertyName(t: PmRequestTicketRow): string {
+  const rel = t.owner_pm_relationships;
+  const r = rel == null ? null : Array.isArray(rel) ? rel[0] : rel;
+  const p = r?.properties;
+  const prop = p == null ? null : Array.isArray(p) ? p[0] : p;
+  return prop?.property_name?.trim() || "Property";
+}
+
+function pmRequestExceedsThreshold(t: PmRequestTicketRow): boolean {
+  const raw = t.dollar_amount;
+  if (raw == null || raw === "") return false;
+  const n = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return false;
+  const rel = t.owner_pm_relationships;
+  const r = rel == null ? null : Array.isArray(rel) ? rel[0] : rel;
+  const th = r?.contract_maintenance_threshold;
+  if (th == null) return false;
+  const limit = typeof th === "number" ? th : Number(th);
+  if (!Number.isFinite(limit)) return false;
+  return n > limit;
+}
+
 const GUEST_BLOCK_TYPES = new Set(["guest_ota", "guest_pm_direct"]);
 
 function isGuestBooking(blockType: string | null | undefined) {
@@ -233,6 +277,13 @@ export default function DashboardPage() {
 
   const [timeRange, setTimeRange] = useState<"year" | "all">("year");
 
+  const [pmRequests, setPmRequests] = useState<PmRequestTicketRow[]>([]);
+  const [pmRequestsLoading, setPmRequestsLoading] = useState(false);
+  const [pmRequestsError, setPmRequestsError] = useState<string | null>(null);
+  const [pmRequestActionId, setPmRequestActionId] = useState<string | null>(
+    null
+  );
+
   const currentYear = new Date().getFullYear();
 
   useEffect(() => {
@@ -402,6 +453,110 @@ export default function DashboardPage() {
   useEffect(() => {
     loadBenchmarks();
   }, [loadBenchmarks]);
+
+  const loadPmRequests = useCallback(async () => {
+    setPmRequestsLoading(true);
+    setPmRequestsError(null);
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) {
+      setPmRequestsLoading(false);
+      setPmRequests([]);
+      return;
+    }
+
+    const { data: rels, error: relErr } = await supabase
+      .from("owner_pm_relationships")
+      .select("id")
+      .eq("owner_id", user.id)
+      .eq("active", true);
+
+    if (relErr) {
+      setPmRequestsLoading(false);
+      setPmRequestsError(relErr.message);
+      setPmRequests([]);
+      return;
+    }
+
+    const relIds = (rels ?? []).map((r) => r.id as string).filter(Boolean);
+    if (relIds.length === 0) {
+      setPmRequestsLoading(false);
+      setPmRequests([]);
+      return;
+    }
+
+    const { data: tickets, error: tErr } = await supabase
+      .from("tickets")
+      .select(
+        `
+        id,
+        request_type,
+        title,
+        description,
+        dollar_amount,
+        status,
+        created_at,
+        proposed_vendor,
+        owner_pm_relationships (
+          contract_maintenance_threshold,
+          properties ( property_name )
+        )
+      `
+      )
+      .eq("direction", "pm_to_owner")
+      .in("owner_pm_relationship_id", relIds)
+      .order("created_at", { ascending: false });
+
+    setPmRequestsLoading(false);
+    if (tErr) {
+      setPmRequestsError(tErr.message);
+      setPmRequests([]);
+      return;
+    }
+    setPmRequests((tickets as PmRequestTicketRow[]) ?? []);
+  }, [supabase]);
+
+  useEffect(() => {
+    loadPmRequests();
+  }, [loadPmRequests]);
+
+  const approvePmRequest = async (id: string) => {
+    setPmRequestActionId(id);
+    const { error } = await supabase
+      .from("tickets")
+      .update({
+        status: "acknowledged",
+        acknowledged_at: new Date().toISOString(),
+      })
+      .eq("id", id)
+      .eq("status", "open");
+    setPmRequestActionId(null);
+    if (error) {
+      alert(error.message);
+      return;
+    }
+    loadPmRequests();
+  };
+
+  const declinePmRequest = async (id: string) => {
+    setPmRequestActionId(id);
+    const { error } = await supabase
+      .from("tickets")
+      .update({
+        status: "resolved",
+        resolved_at: new Date().toISOString(),
+        resolution_note: "Declined by owner",
+      })
+      .eq("id", id)
+      .eq("status", "open");
+    setPmRequestActionId(null);
+    if (error) {
+      alert(error.message);
+      return;
+    }
+    loadPmRequests();
+  };
 
   const filteredBookings = useMemo(() => {
     if (timeRange === "all") return bookings;
@@ -712,6 +867,118 @@ export default function DashboardPage() {
 
       <section className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+          Requests from your PM
+        </h2>
+        <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+          Approvals and decisions your property manager sent you.
+        </p>
+        {pmRequestsError ? (
+          <p className="mt-2 text-sm text-red-600 dark:text-red-400">
+            {pmRequestsError}
+          </p>
+        ) : null}
+        {pmRequestsLoading ? (
+          <p className="mt-3 text-sm text-zinc-500">Loading requests…</p>
+        ) : pmRequests.length === 0 ? (
+          <p className="mt-3 text-sm text-zinc-600 dark:text-zinc-400">
+            No pending requests from your PM.
+          </p>
+        ) : (
+          <ul className="mt-4 space-y-4">
+            {pmRequests.map((t) => {
+              const typeLabel =
+                (t.request_type && PM_REQUEST_TYPE_LABELS[t.request_type]) ||
+                t.request_type ||
+                "Request";
+              const amt =
+                t.dollar_amount != null && t.dollar_amount !== ""
+                  ? Number(t.dollar_amount)
+                  : null;
+              const over = pmRequestExceedsThreshold(t);
+              return (
+                <li
+                  key={t.id}
+                  className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                      {typeLabel}
+                    </span>
+                    <span className="text-xs text-zinc-500">
+                      {pmRequestPropertyName(t)}
+                    </span>
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${
+                        t.status === "open"
+                          ? "bg-amber-100 text-amber-950 dark:bg-amber-950/50 dark:text-amber-100"
+                          : t.status === "acknowledged"
+                            ? "bg-blue-100 text-blue-950 dark:bg-blue-950/50 dark:text-blue-100"
+                            : "bg-emerald-100 text-emerald-950 dark:bg-emerald-950/50 dark:text-emerald-100"
+                      }`}
+                    >
+                      {t.status}
+                    </span>
+                  </div>
+                  <p className="mt-2 font-medium text-zinc-900 dark:text-zinc-50">
+                    {t.title}
+                  </p>
+                  <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+                    {t.description}
+                  </p>
+                  {t.proposed_vendor ? (
+                    <p className="mt-2 text-xs text-zinc-500">
+                      Proposed vendor: {t.proposed_vendor}
+                    </p>
+                  ) : null}
+                  {amt != null && Number.isFinite(amt) ? (
+                    <p className="mt-1 text-sm font-medium text-zinc-800 dark:text-zinc-200">
+                      {formatMoney(amt)}
+                    </p>
+                  ) : null}
+                  {over ? (
+                    <p
+                      role="status"
+                      className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-100"
+                    >
+                      This request exceeds your contract approval threshold and
+                      requires your explicit approval.
+                    </p>
+                  ) : null}
+                  <p className="mt-2 text-xs text-zinc-500">
+                    {new Date(t.created_at).toLocaleString(undefined, {
+                      dateStyle: "medium",
+                      timeStyle: "short",
+                    })}
+                  </p>
+                  {t.status === "open" ? (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        disabled={pmRequestActionId === t.id}
+                        onClick={() => approvePmRequest(t.id)}
+                        className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+                      >
+                        Approve
+                      </button>
+                      <button
+                        type="button"
+                        disabled={pmRequestActionId === t.id}
+                        onClick={() => declinePmRequest(t.id)}
+                        className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-800 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                      >
+                        Decline
+                      </button>
+                    </div>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
+
+      <section className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
           RevPAR trend
         </h2>
         <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
@@ -826,14 +1093,12 @@ export default function DashboardPage() {
           >
             Upload bookings
           </Link>
-          <button
-            type="button"
-            disabled
-            className="inline-flex cursor-not-allowed items-center justify-center rounded-lg border border-zinc-200 px-4 py-2.5 text-sm font-medium text-zinc-400 dark:border-zinc-700 dark:text-zinc-500"
-            title="Coming soon"
+          <Link
+            href="/dashboard/tickets/new"
+            className="inline-flex items-center justify-center rounded-lg border border-zinc-200 px-4 py-2.5 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
           >
             File a ticket
-          </button>
+          </Link>
           <button
             type="button"
             disabled

@@ -1,7 +1,8 @@
 "use client";
 
 import { createClient } from "@/lib/supabase";
-import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 type PmProfileRow = {
   id: string;
@@ -10,11 +11,63 @@ type PmProfileRow = {
   claimed_by_user_id: string | null;
 };
 
+const QUEUE_LABELS: Record<string, string> = {
+  billing_accuracy: "Billing accuracy",
+  payment_timeliness: "Payment timeliness",
+  pricing_management: "Pricing management",
+  maintenance: "Maintenance",
+  guest_screening: "Guest screening",
+  communication: "Communication",
+  listing_management: "Listing management",
+};
+
+type InboxTicket = {
+  id: string;
+  queue: string | null;
+  title: string;
+  status: string;
+  created_at: string;
+  owner_pm_relationships: {
+    properties: {
+      property_name: string | null;
+      address_line1: string | null;
+    } | null;
+  } | null;
+};
+
+function propertyNameFromTicket(t: InboxTicket): string {
+  const rel = t.owner_pm_relationships;
+  const r = rel == null ? null : Array.isArray(rel) ? rel[0] : rel;
+  const p = r?.properties;
+  const prop = p == null ? null : Array.isArray(p) ? p[0] : p;
+  return (
+    prop?.property_name?.trim() ||
+    prop?.address_line1?.trim() ||
+    "Property"
+  );
+}
+
+const STATUS_SECTION_ORDER = [
+  "open",
+  "acknowledged",
+  "resolved",
+  "disputed",
+  "other",
+] as const;
+
+function statusHeading(s: string) {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
 export default function PmDashboardPage() {
   const supabase = createClient();
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState<PmProfileRow | null>(null);
   const [unauthorized, setUnauthorized] = useState(false);
+  const [inboxTickets, setInboxTickets] = useState<InboxTicket[]>([]);
+  const [inboxLoading, setInboxLoading] = useState(false);
+  const [inboxError, setInboxError] = useState<string | null>(null);
+  const [actingId, setActingId] = useState<string | null>(null);
 
   const loadProfile = useCallback(async () => {
     setLoading(true);
@@ -46,9 +99,112 @@ export default function PmDashboardPage() {
     setProfile(data as PmProfileRow | null);
   }, [supabase]);
 
+  const loadInbox = useCallback(
+    async (pmId: string) => {
+      setInboxLoading(true);
+      setInboxError(null);
+      const { data, error } = await supabase
+        .from("tickets")
+        .select(
+          `
+          id,
+          queue,
+          title,
+          status,
+          created_at,
+          owner_pm_relationships (
+            properties ( property_name, address_line1 )
+          )
+        `
+        )
+        .eq("pm_id", pmId)
+        .eq("direction", "owner_to_pm")
+        .order("created_at", { ascending: false });
+
+      setInboxLoading(false);
+      if (error) {
+        setInboxError(error.message);
+        setInboxTickets([]);
+        return;
+      }
+      setInboxTickets((data as InboxTicket[]) ?? []);
+    },
+    [supabase]
+  );
+
   useEffect(() => {
     loadProfile();
   }, [loadProfile]);
+
+  useEffect(() => {
+    if (profile?.profile_claimed && profile.id) {
+      loadInbox(profile.id);
+    } else {
+      setInboxTickets([]);
+    }
+  }, [profile, loadInbox]);
+
+  const groupedTickets = useMemo(() => {
+    const map = new Map<string, InboxTicket[]>();
+    for (const s of STATUS_SECTION_ORDER) {
+      map.set(s, []);
+    }
+    for (const t of inboxTickets) {
+      let bucket: (typeof STATUS_SECTION_ORDER)[number] = "other";
+      if (t.status === "open") bucket = "open";
+      else if (t.status === "acknowledged") bucket = "acknowledged";
+      else if (t.status === "resolved") bucket = "resolved";
+      else if (t.status === "disputed") bucket = "disputed";
+      const list = map.get(bucket) ?? [];
+      list.push(t);
+      map.set(bucket, list);
+    }
+    return map;
+  }, [inboxTickets]);
+
+  const acknowledge = async (id: string) => {
+    setActingId(id);
+    const { error } = await supabase
+      .from("tickets")
+      .update({
+        status: "acknowledged",
+        acknowledged_at: new Date().toISOString(),
+      })
+      .eq("id", id)
+      .eq("status", "open");
+    setActingId(null);
+    if (error) {
+      alert(error.message);
+      return;
+    }
+    if (profile?.id) loadInbox(profile.id);
+  };
+
+  const resolveTicket = async (id: string) => {
+    const note = window.prompt("Resolution note (required):");
+    if (note == null) return;
+    const trimmed = note.trim();
+    if (!trimmed) {
+      alert("Please enter a resolution note.");
+      return;
+    }
+    setActingId(id);
+    const { error } = await supabase
+      .from("tickets")
+      .update({
+        status: "resolved",
+        resolved_at: new Date().toISOString(),
+        resolution_note: trimmed,
+      })
+      .eq("id", id)
+      .in("status", ["open", "acknowledged"]);
+    setActingId(null);
+    if (error) {
+      alert(error.message);
+      return;
+    }
+    if (profile?.id) loadInbox(profile.id);
+  };
 
   if (loading) {
     return (
@@ -107,15 +263,88 @@ export default function PmDashboardPage() {
         </p>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-3">
-        <section className="rounded-xl border border-zinc-200 bg-zinc-50/80 p-4 dark:border-zinc-800 dark:bg-zinc-900/40">
-          <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-            Ticket inbox
-          </h2>
-          <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-            No tickets yet. (Placeholder)
+      <section className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+          Ticket inbox
+        </h2>
+        <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+          Tickets filed by owners (owner → PM).
+        </p>
+        {inboxError ? (
+          <p className="mt-2 text-sm text-red-600 dark:text-red-400">
+            {inboxError}
           </p>
-        </section>
+        ) : null}
+        {inboxLoading ? (
+          <p className="mt-3 text-sm text-zinc-500">Loading tickets…</p>
+        ) : inboxTickets.length === 0 ? (
+          <p className="mt-3 text-sm text-zinc-600 dark:text-zinc-400">
+            No tickets yet.
+          </p>
+        ) : (
+          <div className="mt-4 space-y-6">
+            {STATUS_SECTION_ORDER.map((statusKey) => {
+              const list = groupedTickets.get(statusKey) ?? [];
+              if (list.length === 0) return null;
+              return (
+                <div key={statusKey}>
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                    {statusKey === "other" ? "Other" : statusHeading(statusKey)}
+                  </h3>
+                  <ul className="mt-2 divide-y divide-zinc-200 rounded-lg border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
+                    {list.map((t) => (
+                      <li
+                        key={t.id}
+                        className="flex flex-col gap-2 px-3 py-3 sm:flex-row sm:items-start sm:justify-between"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                            {(t.queue && QUEUE_LABELS[t.queue]) || t.queue} ·{" "}
+                            {propertyNameFromTicket(t)}
+                          </p>
+                          <p className="mt-0.5 font-medium text-zinc-900 dark:text-zinc-50">
+                            {t.title}
+                          </p>
+                          <p className="mt-1 text-xs text-zinc-500">
+                            {new Date(t.created_at).toLocaleString(undefined, {
+                              dateStyle: "medium",
+                              timeStyle: "short",
+                            })}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 flex-wrap gap-2">
+                          {t.status === "open" ? (
+                            <button
+                              type="button"
+                              disabled={actingId === t.id}
+                              onClick={() => acknowledge(t.id)}
+                              className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                            >
+                              Acknowledge
+                            </button>
+                          ) : null}
+                          {t.status === "open" || t.status === "acknowledged" ? (
+                            <button
+                              type="button"
+                              disabled={actingId === t.id}
+                              onClick={() => resolveTicket(t.id)}
+                              className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+                            >
+                              Resolve
+                            </button>
+                          ) : null}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      <div className="grid gap-4 sm:grid-cols-2">
         <section className="rounded-xl border border-zinc-200 bg-zinc-50/80 p-4 dark:border-zinc-800 dark:bg-zinc-900/40">
           <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
             Work orders sent
@@ -135,15 +364,15 @@ export default function PmDashboardPage() {
       </div>
 
       <div>
-        <button
-          type="button"
-          disabled
-          className="rounded-lg bg-zinc-900 px-4 py-2.5 text-sm font-medium text-white opacity-60 dark:bg-zinc-100 dark:text-zinc-900"
+        <Link
+          href="/pm/dashboard/requests/new"
+          className="inline-flex rounded-lg bg-zinc-900 px-4 py-2.5 text-sm font-medium text-white dark:bg-zinc-100 dark:text-zinc-900"
         >
           Submit Request to Owner
-        </button>
+        </Link>
         <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-          Submitting requests to owners will be available in a future update.
+          Maintenance, vendor selection, guest decisions, and other owner
+          approvals.
         </p>
       </div>
     </div>
