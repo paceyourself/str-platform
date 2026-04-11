@@ -1143,6 +1143,12 @@ export default function DashboardPage() {
           >
             Write a review
           </Link>
+          <Link
+            href="/dashboard/properties"
+            className="inline-flex items-center justify-center rounded-lg border border-zinc-200 px-4 py-2.5 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
+          >
+            Manage properties
+          </Link>
           <button
             type="button"
             disabled
