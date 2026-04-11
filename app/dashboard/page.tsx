@@ -320,7 +320,36 @@ export default function DashboardPage() {
     null
   );
 
+  const [surveyPendingCount, setSurveyPendingCount] = useState<number | null>(
+    null
+  );
+
   const currentYear = new Date().getFullYear();
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user || cancelled) return;
+      const { count, error } = await supabase
+        .from("survey_responses")
+        .select("*", { count: "exact", head: true })
+        .eq("owner_id", user.id)
+        .is("submitted_at", null);
+      if (cancelled) return;
+      if (error) {
+        console.warn(error);
+        setSurveyPendingCount(0);
+        return;
+      }
+      setSurveyPendingCount(count ?? 0);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [supabase]);
 
   useEffect(() => {
     let cancelled = false;
@@ -705,6 +734,31 @@ export default function DashboardPage() {
           Overview for your rental properties.
         </p>
       </div>
+
+      {surveyPendingCount != null && surveyPendingCount > 0 ? (
+        <div
+          role="status"
+          className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-100"
+        >
+          <span
+            className="inline-flex min-w-8 items-center justify-center rounded-full bg-amber-200 px-2 py-0.5 text-xs font-bold tabular-nums text-amber-950 dark:bg-amber-800 dark:text-amber-50"
+            aria-label={`${surveyPendingCount} pending`}
+          >
+            {surveyPendingCount}
+          </span>
+          <p className="min-w-0 flex-1">
+            You have {surveyPendingCount} pending survey
+            {surveyPendingCount === 1 ? "" : "s"}. Complete them to help rate
+            your property manager.
+          </p>
+          <Link
+            href="/dashboard/surveys"
+            className="shrink-0 font-semibold text-amber-900 underline-offset-2 hover:underline dark:text-amber-50"
+          >
+            View surveys
+          </Link>
+        </div>
+      ) : null}
 
       <section className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
@@ -1149,14 +1203,12 @@ export default function DashboardPage() {
           >
             Manage properties
           </Link>
-          <button
-            type="button"
-            disabled
-            className="inline-flex cursor-not-allowed items-center justify-center rounded-lg border border-zinc-200 px-4 py-2.5 text-sm font-medium text-zinc-400 dark:border-zinc-700 dark:text-zinc-500"
-            title="Coming soon"
+          <Link
+            href="/dashboard/statements/new"
+            className="inline-flex items-center justify-center rounded-lg border border-zinc-200 px-4 py-2.5 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
           >
-            Upload PM statement
-          </button>
+            Upload statement
+          </Link>
         </div>
       </section>
     </div>

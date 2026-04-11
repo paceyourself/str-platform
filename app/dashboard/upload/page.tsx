@@ -92,6 +92,14 @@ const BASE_BOOKING_KEYS = new Set([
   "source_file_id",
 ]);
 
+/** Omit survey_triggered so upserts never overwrite it (only trigger sets true). */
+function bookingPayloadForUpsert(
+  row: Record<string, unknown>
+): Record<string, unknown> {
+  const { survey_triggered: _ignored, ...rest } = row;
+  return rest;
+}
+
 function cellString(v: unknown): string {
   if (v == null) return "";
   return typeof v === "string" ? v : String(v);
@@ -171,6 +179,137 @@ function rowToPayload(
   );
   if (substantiveKeys.length === 0) return null;
   return payload;
+}
+
+/** After booking upsert: surveys for completed owner stays (check_out before today). */
+async function triggerPostOwnerStaySurveys(
+  supabase: ReturnType<typeof createClient>,
+  ownerId: string,
+  sourceReservationIds: string[],
+  relationshipIds: string[]
+): Promise<number> {
+  if (sourceReservationIds.length === 0 || relationshipIds.length === 0) {
+    return 0;
+  }
+
+  const today = new Date();
+  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+
+  const { data: bookingRows, error: bErr } = await supabase
+    .from("bookings")
+    .select(
+      "id, property_id, block_type, check_out, survey_triggered, owner_pm_relationship_id, source_reservation_id"
+    )
+    .in("source_reservation_id", sourceReservationIds)
+    .in("owner_pm_relationship_id", relationshipIds);
+
+  if (bErr || !bookingRows?.length) {
+    if (bErr) console.warn("[survey trigger] bookings query:", bErr);
+    return 0;
+  }
+
+  type BRow = {
+    id: string;
+    property_id: string;
+    block_type: string | null;
+    check_out: string | null;
+    survey_triggered: boolean | null;
+    owner_pm_relationship_id: string | null;
+  };
+
+  const candidates = (bookingRows as BRow[]).filter((b) => {
+    if (b.block_type !== "owner_stay") return false;
+    const co = b.check_out ? String(b.check_out).slice(0, 10) : "";
+    if (!co || co >= todayStr) return false;
+    if (b.survey_triggered === true) return false;
+    if (!b.owner_pm_relationship_id) return false;
+    return true;
+  });
+
+  if (candidates.length === 0) return 0;
+
+  const relIds = [
+    ...new Set(
+      candidates
+        .map((b) => b.owner_pm_relationship_id)
+        .filter((x): x is string => Boolean(x))
+    ),
+  ];
+
+  const { data: relData, error: rErr } = await supabase
+    .from("owner_pm_relationships")
+    .select("id, pm_id, owner_id")
+    .in("id", relIds);
+
+  if (rErr || !relData?.length) {
+    if (rErr) console.warn("[survey trigger] relationships:", rErr);
+    return 0;
+  }
+
+  const relMap = new Map(
+    (relData as { id: string; pm_id: string; owner_id: string }[]).map(
+      (r) => [r.id, r] as const
+    )
+  );
+
+  let count = 0;
+  for (const b of candidates) {
+    const rel = relMap.get(b.owner_pm_relationship_id!);
+    if (!rel || rel.owner_id !== ownerId) continue;
+
+    const { data: dupNotifications, error: dupNotifErr } = await supabase
+      .from("notifications")
+      .select("id")
+      .eq("recipient_user_id", ownerId)
+      .eq("notification_type", "survey_post_owner_stay")
+      .eq("reference_id", b.id)
+      .limit(1);
+
+    if (dupNotifErr) {
+      console.warn("[survey trigger] duplicate notification check:", dupNotifErr);
+      continue;
+    }
+
+    if (dupNotifications && dupNotifications.length > 0) {
+      continue;
+    }
+
+    const { error: surErr } = await supabase.from("survey_responses").insert({
+      owner_pm_relationship_id: b.owner_pm_relationship_id,
+      owner_id: ownerId,
+      pm_id: rel.pm_id,
+      property_id: b.property_id,
+      trigger_type: "post_owner_stay",
+      trigger_reference_id: b.id,
+      sent_at: new Date().toISOString(),
+    });
+
+    if (surErr) {
+      console.warn("[survey trigger] survey_responses insert:", surErr);
+      continue;
+    }
+
+    const { error: nErr } = await supabase.from("notifications").insert({
+      recipient_user_id: ownerId,
+      notification_type: "survey_post_owner_stay",
+      reference_id: b.id,
+      channel: "in_app",
+    });
+
+    if (nErr) {
+      console.warn("[survey trigger] notifications insert:", nErr);
+      continue;
+    }
+
+    const { error: uErr } = await supabase
+      .from("bookings")
+      .update({ survey_triggered: true })
+      .eq("id", b.id);
+
+    if (!uErr) count += 1;
+  }
+
+  return count;
 }
 
 function parseCsvForPreview(
@@ -326,6 +465,12 @@ export default function BookingsUploadPage() {
     setStatus(null);
     const file = e.target.files?.[0];
     if (!file) return;
+
+    if (loadingProps || properties.length === 0) {
+      setError("Still loading your properties. Try again in a moment.");
+      e.target.value = "";
+      return;
+    }
 
     if (!selectedPmId) {
       setError("Select your property manager first.");
@@ -531,7 +676,9 @@ export default function BookingsUploadPage() {
 
     const chunkSize = 40;
     for (let i = 0; i < uniquePayloads.length; i += chunkSize) {
-      const slice = uniquePayloads.slice(i, i + chunkSize);
+      const slice = uniquePayloads
+        .slice(i, i + chunkSize)
+        .map((row) => bookingPayloadForUpsert(row as Record<string, unknown>));
       const { error: upErr } = await supabase.from("bookings").upsert(slice, {
         onConflict: "source_reservation_id",
       });
@@ -540,6 +687,21 @@ export default function BookingsUploadPage() {
         setError(upErr.message);
         return;
       }
+    }
+
+    const reservationKeys = [
+      ...new Set(
+        uniquePayloads.map((p) => String(p.source_reservation_id).trim())
+      ),
+    ];
+    let surveysTriggered = 0;
+    if (relationshipIds.length > 0 && reservationKeys.length > 0) {
+      surveysTriggered = await triggerPostOwnerStaySurveys(
+        supabase,
+        user.id,
+        reservationKeys,
+        relationshipIds
+      );
     }
 
     const cancelledAt = new Date().toISOString();
@@ -593,6 +755,11 @@ export default function BookingsUploadPage() {
       `${cancellationsDetected} cancellation${cancellationsDetected === 1 ? "" : "s"} detected`,
       `${rowsUnmatchedUnit} row${rowsUnmatchedUnit === 1 ? "" : "s"} unmatched`,
     ];
+    if (surveysTriggered > 0) {
+      parts.push(
+        `${surveysTriggered} survey${surveysTriggered === 1 ? "" : "s"} triggered for completed owner stays`
+      );
+    }
     let msg = parts.join(", ") + ".";
     if (rowsSkippedOther > 0) {
       msg += ` ${rowsSkippedOther} row${rowsSkippedOther === 1 ? "" : "s"} skipped (missing reservation id or no PM link).`;
@@ -661,30 +828,39 @@ export default function BookingsUploadPage() {
 
       <div>
         <label
-          htmlFor="csv"
+          htmlFor="csv-upload-input"
           className="block text-sm font-medium text-zinc-700 dark:text-zinc-300"
         >
           Combined CSV
         </label>
-        <input
-          key={fileInputKey}
-          id="csv"
-          type="file"
-          accept=".csv,text/csv"
-          disabled={uploading || !selectedPmId || loadingProps}
-          onChange={onFileSelected}
-          className="mt-1.5 block w-full text-sm text-zinc-600 file:mr-3 file:rounded-lg file:border-0 file:bg-zinc-900 file:px-3 file:py-2 file:text-sm file:font-medium file:text-white dark:text-zinc-400 dark:file:bg-zinc-100 dark:file:text-zinc-900"
-        />
-        {parsed ? (
-          <p className="mt-1 text-xs text-zinc-500">
-            Selected: {parsed.fileName} — preview below; confirm to apply.
-          </p>
-        ) : (
-          <p className="mt-1 text-xs text-zinc-500">
-            Columns include Reservation Id, Unit, Type, Status, dates, Income,
-            etc.
-          </p>
-        )}
+        <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+          {parsed
+            ? `Selected: ${parsed.fileName} — preview below; confirm to apply.`
+            : "Columns include Reservation Id, Unit, Type, Status, dates, Income, etc."}
+        </p>
+        <div className="relative mt-2 min-h-[44px]">
+          <div
+            className="pointer-events-none flex min-h-[44px] w-full items-center gap-3 rounded-lg border border-zinc-300 bg-white px-3 py-2 dark:border-zinc-600 dark:bg-zinc-900"
+            aria-hidden
+          >
+            <span className="shrink-0 rounded-lg bg-zinc-900 px-3 py-2 text-sm font-medium text-white dark:bg-zinc-100 dark:text-zinc-900">
+              Choose file
+            </span>
+            <span className="min-w-0 truncate text-sm text-zinc-600 dark:text-zinc-400">
+              {parsed?.fileName ?? "No file selected"}
+            </span>
+          </div>
+          <input
+            key={fileInputKey}
+            id="csv-upload-input"
+            type="file"
+            accept=".csv,text/csv"
+            disabled={uploading}
+            onChange={onFileSelected}
+            aria-label="Choose combined CSV file to upload"
+            className="absolute inset-0 z-10 m-0 h-full w-full cursor-pointer p-0 opacity-0 disabled:cursor-not-allowed"
+          />
+        </div>
       </div>
 
       {parsed ? (
