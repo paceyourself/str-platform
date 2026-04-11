@@ -235,6 +235,44 @@ export default function DashboardPage() {
 
   const currentYear = new Date().getFullYear();
 
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user || cancelled) return;
+      const { data: ownerProfile, error: ownerErr } = await supabase
+        .from("owner_profiles")
+        .select("id")
+        .eq("id", user.id)
+        .maybeSingle();
+      if (ownerErr) {
+        console.error(ownerErr);
+        return;
+      }
+      if (cancelled || ownerProfile) return;
+
+      const { data: pmRow, error: pmErr } = await supabase
+        .from("pm_profiles")
+        .select("id")
+        .eq("claimed_by_user_id", user.id)
+        .maybeSingle();
+      if (pmErr) {
+        console.error(pmErr);
+        return;
+      }
+      if (pmRow) {
+        router.replace("/pm/dashboard");
+      } else {
+        router.replace("/signup");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [router, supabase]);
+
   const loadProperties = useCallback(async () => {
     setPropertiesLoading(true);
     const {
