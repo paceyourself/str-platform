@@ -122,10 +122,31 @@ function isGuestBooking(blockType: string | null | undefined) {
   return blockType != null && GUEST_BLOCK_TYPES.has(blockType);
 }
 
+/** Formats a Postgres `date` or timestamptz string for display. Date-only `YYYY-MM-DD` is treated as a calendar day in the local timezone (avoids UTC midnight shifting the day). */
 function formatDate(iso: string | null | undefined) {
   if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
+  const s = iso.trim();
+  const ymd = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (ymd) {
+    const y = Number(ymd[1]);
+    const m = Number(ymd[2]);
+    const day = Number(ymd[3]);
+    const d = new Date(y, m - 1, day);
+    if (
+      d.getFullYear() !== y ||
+      d.getMonth() !== m - 1 ||
+      d.getDate() !== day
+    ) {
+      return s;
+    }
+    return d.toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    });
+  }
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return s;
   return d.toLocaleDateString(undefined, {
     year: "numeric",
     month: "short",
@@ -400,6 +421,7 @@ export default function DashboardPage() {
       )
       .eq("property_id", selectedPropertyId)
       .eq("active", true)
+      .order("start_date", { ascending: false, nullsFirst: false })
       .limit(1);
 
     if (pmRes.error) {
@@ -1114,6 +1136,12 @@ export default function DashboardPage() {
             className="inline-flex items-center justify-center rounded-lg border border-zinc-200 px-4 py-2.5 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
           >
             File a ticket
+          </Link>
+          <Link
+            href="/dashboard/reviews/new"
+            className="inline-flex items-center justify-center rounded-lg border border-zinc-200 px-4 py-2.5 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
+          >
+            Write a review
           </Link>
           <button
             type="button"
