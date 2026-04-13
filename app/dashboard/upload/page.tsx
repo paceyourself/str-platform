@@ -385,6 +385,9 @@ export default function BookingsUploadPage() {
   const [parsed, setParsed] = useState<ParsedUploadState | null>(null);
   const [fileInputKey, setFileInputKey] = useState(0);
 
+  const [pmInputValue, setPmInputValue] = useState("");
+  const [pmDropdownOpen, setPmDropdownOpen] = useState(false);
+
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -405,6 +408,31 @@ export default function BookingsUploadPage() {
     }
     return lines;
   }, [parsed]);
+
+  const filteredPms = useMemo(() => {
+    const q = pmInputValue.trim().toLowerCase();
+    return pmList.filter((pm) =>
+      (pm.company_name ?? "").toLowerCase().includes(q)
+    );
+  }, [pmList, pmInputValue]);
+
+  useEffect(() => {
+    function onDocMouseDown(e: MouseEvent) {
+      if (!pmDropdownOpen) return;
+      const root = document.getElementById("pm-combobox-root");
+      if (root && !root.contains(e.target as Node)) {
+        setPmDropdownOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [pmDropdownOpen]);
+
+  useEffect(() => {
+    if (loadingPms || uploading) {
+      setPmDropdownOpen(false);
+    }
+  }, [loadingPms, uploading]);
 
   const loadPropertiesAndPms = useCallback(async () => {
     setLoadingProps(true);
@@ -778,6 +806,30 @@ export default function BookingsUploadPage() {
     setFileInputKey((k) => k + 1);
   }
 
+  function onPmInputChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const v = e.target.value;
+    setPmInputValue(v);
+    setPmDropdownOpen(true);
+    const name = (
+      pmList.find((p) => p.id === selectedPmId)?.company_name ?? ""
+    ).trim();
+    if (!selectedPmId || v.trim() !== name) {
+      setSelectedPmId("");
+    }
+  }
+
+  function onPmInputFocus() {
+    if (!loadingPms && !uploading) {
+      setPmDropdownOpen(true);
+    }
+  }
+
+  function selectPmOption(pm: PmOption) {
+    setSelectedPmId(pm.id);
+    setPmInputValue(pm.company_name);
+    setPmDropdownOpen(false);
+  }
+
   return (
     <div className="max-w-2xl space-y-6">
       <div>
@@ -806,29 +858,60 @@ export default function BookingsUploadPage() {
         </div>
       ) : null}
 
-      <div>
+      <div id="pm-combobox-root" className="relative">
         <label
-          htmlFor="pm"
+          htmlFor="pm-combobox-input"
           className="block text-sm font-medium text-zinc-700 dark:text-zinc-300"
         >
           Property manager
         </label>
-        <select
-          id="pm"
-          value={selectedPmId}
-          onChange={(e) => setSelectedPmId(e.target.value)}
+        <input
+          id="pm-combobox-input"
+          type="text"
+          role="combobox"
+          aria-expanded={pmDropdownOpen}
+          aria-controls="pm-combobox-list"
+          aria-autocomplete="list"
+          autoComplete="off"
           disabled={loadingPms || uploading}
-          className="mt-1.5 block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50"
-        >
-          <option value="">
-            {loadingPms ? "Loading…" : "Select PM"}
-          </option>
-          {pmList.map((pm) => (
-            <option key={pm.id} value={pm.id}>
-              {pm.company_name}
-            </option>
-          ))}
-        </select>
+          value={loadingPms ? "" : pmInputValue}
+          onChange={onPmInputChange}
+          onFocus={onPmInputFocus}
+          placeholder={loadingPms ? "Loading…" : "Select PM"}
+          className="mt-1.5 block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-900 focus:ring-2 focus:ring-zinc-900/20 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50 dark:focus:border-zinc-400 dark:focus:ring-zinc-400/20"
+        />
+        {pmDropdownOpen && !loadingPms ? (
+          <ul
+            id="pm-combobox-list"
+            role="listbox"
+            className="absolute z-20 mt-1 max-h-60 w-full overflow-auto rounded-lg border border-zinc-200 bg-white py-1 text-sm shadow-lg dark:border-zinc-600 dark:bg-zinc-900"
+          >
+            {filteredPms.length === 0 ? (
+              <li
+                role="presentation"
+                className="px-3 py-2 text-zinc-500 dark:text-zinc-400"
+              >
+                No PMs found
+              </li>
+            ) : (
+              filteredPms.map((pm) => (
+                <li key={pm.id} role="presentation">
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={selectedPmId === pm.id}
+                    disabled={uploading}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => selectPmOption(pm)}
+                    className="flex w-full px-3 py-2 text-left text-zinc-900 hover:bg-zinc-100 disabled:opacity-50 dark:text-zinc-100 dark:hover:bg-zinc-800"
+                  >
+                    {pm.company_name}
+                  </button>
+                </li>
+              ))
+            )}
+          </ul>
+        ) : null}
       </div>
 
       <div>
