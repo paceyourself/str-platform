@@ -28,9 +28,11 @@ function rowToForm(row: Record<string, unknown>): PropertyFormState {
     bedroom_count: String(
       row.bedroom_count != null ? row.bedroom_count : "1"
     ),
+    sleeps: row.sleeps != null ? String(row.sleeps) : "",
     property_type: (validPt ? pt : "standalone_home") as PropertyFormState["property_type"],
     beach_proximity: (validBp ? bp : "walkable") as PropertyFormState["beach_proximity"],
     private_pool: Boolean(row.private_pool),
+    positioning_statement: String(row.positioning_statement ?? ""),
   };
 }
 
@@ -66,7 +68,7 @@ export default function EditPropertyPage() {
       const { data: row, error: qErr } = await supabase
         .from("properties")
         .select(
-          "id, owner_id, property_name, address_line1, address_line2, city, state, zip, bedroom_count, property_type, beach_proximity, private_pool, deleted_at"
+          "id, owner_id, property_name, address_line1, address_line2, city, state, zip, bedroom_count, sleeps, property_type, beach_proximity, private_pool, positioning_statement, deleted_at"
         )
         .eq("id", id)
         .maybeSingle();
@@ -119,6 +121,7 @@ export default function EditPropertyPage() {
       }
 
       const beds = Number(form.bedroom_count);
+      const sleepsTrim = form.sleeps.trim();
       const { error: uErr } = await supabase
         .from("properties")
         .update({
@@ -129,9 +132,11 @@ export default function EditPropertyPage() {
           state: form.state.trim(),
           zip: form.zip.trim(),
           bedroom_count: beds,
+          sleeps: sleepsTrim ? Number(form.sleeps) : null,
           property_type: form.property_type,
           beach_proximity: form.beach_proximity,
           private_pool: form.private_pool,
+          positioning_statement: form.positioning_statement.trim() || null,
         })
         .eq("id", id)
         .eq("owner_id", user.id)
@@ -192,6 +197,32 @@ export default function EditPropertyPage() {
         ) : null}
 
         <PropertyDetailsFields form={form} setForm={setForm} />
+
+        <div>
+          <label
+            htmlFor="positioning_statement"
+            className="block text-sm font-medium text-zinc-700 dark:text-zinc-300"
+          >
+            What makes this property unique?
+          </label>
+          <textarea
+            id="positioning_statement"
+            rows={4}
+            maxLength={500}
+            value={form.positioning_statement}
+            onChange={(e) =>
+              setForm((f) => ({
+                ...f,
+                positioning_statement: e.target.value,
+              }))
+            }
+            placeholder="Describe what makes this property stand out — location highlights, special features, or what guests love most"
+            className="mt-1.5 block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 shadow-sm outline-none focus:border-zinc-900 focus:ring-2 focus:ring-zinc-900/20 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50 dark:focus:border-zinc-400 dark:focus:ring-zinc-400/20"
+          />
+          <p className="mt-1.5 text-sm text-zinc-500 dark:text-zinc-400">
+            {form.positioning_statement.length} / 500
+          </p>
+        </div>
 
         <div className="flex flex-wrap gap-3 pt-2">
           <button

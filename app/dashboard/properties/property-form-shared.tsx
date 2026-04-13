@@ -26,9 +26,11 @@ export type PropertyFormState = {
   state: string;
   zip: string;
   bedroom_count: string;
+  sleeps: string;
   property_type: (typeof PROPERTY_TYPES)[number]["value"];
   beach_proximity: (typeof BEACH_PROXIMITY)[number]["value"];
   private_pool: boolean;
+  positioning_statement: string;
 };
 
 export function emptyPropertyForm(): PropertyFormState {
@@ -40,9 +42,11 @@ export function emptyPropertyForm(): PropertyFormState {
     state: "FL",
     zip: "",
     bedroom_count: "1",
+    sleeps: "",
     property_type: "standalone_home",
     beach_proximity: "walkable",
     private_pool: false,
+    positioning_statement: "",
   };
 }
 
@@ -190,6 +194,27 @@ export function PropertyDetailsFields({
 
       <div>
         <label
+          htmlFor="sleeps"
+          className="block text-sm font-medium text-zinc-700 dark:text-zinc-300"
+        >
+          Sleeps
+        </label>
+        <input
+          id="sleeps"
+          type="number"
+          min={1}
+          value={form.sleeps}
+          onChange={(e) => patch({ sleeps: e.target.value })}
+          placeholder="e.g. 8"
+          className="mt-1.5 block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 shadow-sm outline-none focus:border-zinc-900 focus:ring-2 focus:ring-zinc-900/20 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50 dark:focus:border-zinc-400 dark:focus:ring-zinc-400/20"
+        />
+        <p className="mt-1.5 text-sm text-zinc-500 dark:text-zinc-400">
+          Total guests the property accommodates
+        </p>
+      </div>
+
+      <div>
+        <label
           htmlFor="property_type"
           className="block text-sm font-medium text-zinc-700 dark:text-zinc-300"
         >
@@ -272,6 +297,15 @@ export function validatePropertyForm(form: PropertyFormState): string | null {
   const beds = Number(form.bedroom_count);
   if (!Number.isFinite(beds) || beds < 1) {
     return "Bedroom count must be at least 1.";
+  }
+  if (form.sleeps.trim()) {
+    const sl = Number(form.sleeps);
+    if (!Number.isFinite(sl) || sl < 1) {
+      return "Sleeps must be at least 1.";
+    }
+  }
+  if (form.positioning_statement.length > 500) {
+    return "Positioning statement must be 500 characters or fewer.";
   }
   return null;
 }
