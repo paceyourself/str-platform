@@ -317,6 +317,35 @@ async function triggerPostOwnerStaySurveys(
   return count;
 }
 
+/**
+ * Step 3: true when contract_start_date (or legacy start_date) is within the last 90 calendar days
+ * from today (inclusive of the cutoff day) — suppress post-stay surveys in that case.
+ */
+function suppressPostStaySurveyForRecentContract(
+  contractStart: string | null | undefined
+): boolean {
+  const raw =
+    contractStart == null ? "" : String(contractStart).trim();
+  if (!raw) {
+    return false;
+  }
+  const c = raw.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(c)) {
+    return false;
+  }
+  const today = new Date();
+  const cutoff = new Date(today);
+  cutoff.setDate(cutoff.getDate() - 90);
+  const cy = cutoff.getFullYear();
+  const cm = String(cutoff.getMonth() + 1).padStart(2, "0");
+  const cd = String(cutoff.getDate()).padStart(2, "0");
+  const cutoffStr = `${cy}-${cm}-${cd}`;
+  if (c < cutoffStr) {
+    return false;
+  }
+  return true;
+}
+
 function parseCsvForPreview(
   normalizedText: string,
   nameLookup: Map<string, PropertyOption>
@@ -691,6 +720,14 @@ export default function BookingsUploadPage() {
     }
     const uniquePayloads = [...dedupedByReservation.values()];
 
+    const distinctPropertyIds = [
+      ...new Set(
+        uniquePayloads
+          .map((p) => String(p.property_id ?? "").trim())
+          .filter((id) => id.length > 0)
+      ),
+    ];
+
     if (uniquePayloads.length === 0) {
       setUploading(false);
       setError(
@@ -728,13 +765,89 @@ export default function BookingsUploadPage() {
       ),
     ];
     let surveysTriggered = 0;
-    if (relationshipIds.length > 0 && reservationKeys.length > 0) {
-      surveysTriggered = await triggerPostOwnerStaySurveys(
-        supabase,
-        user.id,
-        reservationKeys,
-        relationshipIds
-      );
+    if (
+      relationshipIds.length > 0 &&
+      reservationKeys.length > 0 &&
+      distinctPropertyIds.length > 0
+    ) {
+      let runSurveyTriggers = false;
+
+      const { count: priorPropBatchCount, error: ubErr } = await supabase
+        .from("upload_batches")
+        .select("*", { count: "exact", head: true })
+        .eq("owner_id", user.id)
+        .in("property_id", distinctPropertyIds);
+
+      if (ubErr) {
+        console.warn("[survey gate] upload_batches:", ubErr);
+        runSurveyTriggers = true;
+      } else if ((priorPropBatchCount ?? 0) > 0) {
+        runSurveyTriggers = true;
+      } else {
+        const { data: pmRels, error: pmRelErr } = await supabase
+          .from("owner_pm_relationships")
+          .select("property_id")
+          .eq("owner_id", user.id)
+          .eq("pm_id", selectedPmId)
+          .eq("active", true);
+
+        if (pmRelErr) {
+          console.warn("[survey gate] owner_pm_relationships:", pmRelErr);
+          runSurveyTriggers = true;
+        } else {
+          const inFile = new Set(distinctPropertyIds);
+          const pmNotNewToOwner = (pmRels ?? []).some(
+            (r) => !inFile.has(String(r.property_id))
+          );
+          if (pmNotNewToOwner) {
+            runSurveyTriggers = false;
+          } else {
+            const relIdsToCheck = [
+              ...new Set(
+                distinctPropertyIds
+                  .map((pid) => relByProperty.get(pid))
+                  .filter((id): id is string => Boolean(id))
+              ),
+            ];
+
+            if (relIdsToCheck.length === 0) {
+              runSurveyTriggers = true;
+            } else {
+              const { data: contractRows, error: cErr } = await supabase
+                .from("owner_pm_relationships")
+                .select("contract_start_date, start_date")
+                .in("id", relIdsToCheck);
+
+              if (cErr) {
+                console.warn("[survey gate] contract dates:", cErr);
+                runSurveyTriggers = true;
+              } else {
+                runSurveyTriggers = true;
+                for (const row of contractRows ?? []) {
+                  const r = row as {
+                    contract_start_date?: string | null;
+                    start_date?: string | null;
+                  };
+                  const eff = r.contract_start_date ?? r.start_date;
+                  if (suppressPostStaySurveyForRecentContract(eff)) {
+                    runSurveyTriggers = false;
+                    break;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if (runSurveyTriggers) {
+        surveysTriggered = await triggerPostOwnerStaySurveys(
+          supabase,
+          user.id,
+          reservationKeys,
+          relationshipIds
+        );
+      }
     }
 
     const cancelledAt = new Date().toISOString();
@@ -775,6 +888,20 @@ export default function BookingsUploadPage() {
           setError(cancelErr.message);
           return;
         }
+      }
+    }
+
+    if (distinctPropertyIds.length > 0) {
+      const { error: ubErr } = await supabase.from("upload_batches").insert(
+        distinctPropertyIds.map((property_id) => ({
+          owner_id: user.id,
+          property_id,
+          pm_id: selectedPmId,
+          source_file_id: sourceFileId,
+        }))
+      );
+      if (ubErr) {
+        console.warn("[upload] upload_batches insert:", ubErr);
       }
     }
 
