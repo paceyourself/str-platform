@@ -1,5 +1,6 @@
 "use client";
 
+import { OwnerDashboardNav } from "@/components/owner-dashboard-nav";
 import { createClient } from "@/lib/supabase";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -304,87 +305,89 @@ export default function PmDirectoryPage() {
   }, [pms, search]);
 
   return (
-    <div className="min-h-full bg-zinc-50 dark:bg-zinc-950">
-      <div className="border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-        <div className="mx-auto max-w-4xl px-4 py-10">
-          <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
-            <Link href="/" className="hover:underline">
-              Home
-            </Link>
-            <span className="mx-2">/</span>
-            Property managers
-          </p>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
-            30A Property Manager Directory
-          </h1>
-          <p className="mt-3 max-w-2xl text-sm text-zinc-600 dark:text-zinc-400">
-            Browse and compare property managers in the 30A market. Ratings and
-            reviews from verified owners.
-          </p>
-          <div className="mt-6">
-            <label htmlFor="pm-search" className="sr-only">
-              Search by company name
-            </label>
-            <input
-              id="pm-search"
-              type="search"
-              placeholder="Search by company name…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="w-full max-w-md rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm outline-none focus:border-zinc-900 focus:ring-2 focus:ring-zinc-900/15 dark:border-zinc-600 dark:bg-zinc-950 dark:text-zinc-50 dark:focus:border-zinc-400"
-            />
+    <div className="flex min-h-full flex-1 flex-col bg-zinc-50 dark:bg-zinc-950">
+      <OwnerDashboardNav />
+      <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-8">
+        <div className="border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+          <div className="mx-auto max-w-4xl px-4 py-10">
+            <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
+              <Link href="/" className="hover:underline">
+                Home
+              </Link>
+              <span className="mx-2">/</span>
+              Property managers
+            </p>
+            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+              30A Property Manager Directory
+            </h1>
+            <p className="mt-3 max-w-2xl text-sm text-zinc-600 dark:text-zinc-400">
+              Browse and compare property managers in the 30A market. Ratings and
+              reviews from verified owners.
+            </p>
+            <div className="mt-6">
+              <label htmlFor="pm-search" className="sr-only">
+                Search by company name
+              </label>
+              <input
+                id="pm-search"
+                type="search"
+                placeholder="Search by company name…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="w-full max-w-md rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm outline-none focus:border-zinc-900 focus:ring-2 focus:ring-zinc-900/15 dark:border-zinc-600 dark:bg-zinc-950 dark:text-zinc-50 dark:focus:border-zinc-400"
+              />
+            </div>
           </div>
         </div>
-      </div>
 
-      <div className="mx-auto max-w-4xl px-4 py-8">
-        {error ? (
-          <div
-            role="alert"
-            className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-200"
-          >
-            {error}
-          </div>
-        ) : null}
+        <div className="mx-auto max-w-4xl px-4 py-8">
+          {error ? (
+            <div
+              role="alert"
+              className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-200"
+            >
+              {error}
+            </div>
+          ) : null}
 
-        {loading ? (
-          <p className="text-sm text-zinc-500">Loading directory…</p>
-        ) : filteredPms.length === 0 ? (
-          <p className="text-sm text-zinc-600 dark:text-zinc-400">
-            {pms.length === 0
-              ? "No property managers listed for this market yet."
-              : "No companies match your search."}
-          </p>
-        ) : (
-          <ul className="space-y-6">
-            {filteredPms.map((pm) => {
-              const lookupKey = pmKey(pm.id);
-              const contract = contractByPm.get(lookupKey);
-              const tickets = ticketByPm.get(lookupKey);
-              const reviews = reviewsByPm.get(lookupKey) ?? [];
-              const reviewExcerpts = reviews.slice(0, 2);
-              const web = hrefUrl(pm.website_url);
+          {loading ? (
+            <p className="text-sm text-zinc-500">Loading directory…</p>
+          ) : filteredPms.length === 0 ? (
+            <p className="text-sm text-zinc-600 dark:text-zinc-400">
+              {pms.length === 0
+                ? "No property managers listed for this market yet."
+                : "No companies match your search."}
+            </p>
+          ) : (
+            <ul className="space-y-6">
+              {filteredPms.map((pm) => {
+                const lookupKey = pmKey(pm.id);
+                const contract = contractByPm.get(lookupKey);
+                const tickets = ticketByPm.get(lookupKey);
+                const reviews = reviewsByPm.get(lookupKey) ?? [];
+                const reviewExcerpts = reviews.slice(0, 2);
+                const web = hrefUrl(pm.website_url);
 
-              if (
-                (pm.company_name ?? "").toLowerCase().includes("oversee")
-              ) {
-                console.log("[pm directory] Oversee card render", {
-                  pm_id: pm.id,
-                  lookupKey,
-                  contract,
-                  tickets,
-                  contractMapHasKey: contractByPm.has(lookupKey),
-                  ticketMapHasKey: ticketByPm.has(lookupKey),
-                  contractMapKeysSample: [...contractByPm.keys()].slice(0, 8),
-                  ticketMapKeysSample: [...ticketByPm.keys()].slice(0, 8),
-                });
-              }
+                if (
+                  (pm.company_name ?? "").toLowerCase().includes("oversee")
+                ) {
+                  console.log("[pm directory] Oversee card render", {
+                    pm_id: pm.id,
+                    lookupKey,
+                    contract,
+                    tickets,
+                    contractMapHasKey: contractByPm.has(lookupKey),
+                    ticketMapHasKey: ticketByPm.has(lookupKey),
+                    contractMapKeysSample: [...contractByPm.keys()].slice(0, 8),
+                    ticketMapKeysSample: [...ticketByPm.keys()].slice(0, 8),
+                  });
+                }
 
-              return (
-                <li
-                  key={pm.id}
-                  className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
-                >
+                return (
+                  <li
+                    key={pm.id}
+                    className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+                  >
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
                       <h2 className="text-xl font-semibold text-zinc-900 dark:text-zinc-50">
@@ -523,31 +526,46 @@ export default function PmDirectoryPage() {
                     <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
                       Reviews
                     </h3>
-                    <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-                      {reviews.length === 0
-                        ? "No reviews yet — be the first"
-                        : `${reviews.length} visible review${reviews.length === 1 ? "" : "s"}`}
-                    </p>
-                    {reviewExcerpts.length > 0 ? (
-                      <ul className="mt-3 space-y-3">
-                        {reviewExcerpts.map((rev, idx) => (
-                          <li
-                            key={`${pm.id}-${idx}`}
-                            className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-                          >
-                            <div className="flex items-center gap-2">
-                              <Stars rating={rev.overall_rating} />
-                              <span className="text-xs text-zinc-500">
-                                {rev.overall_rating}/5
-                              </span>
-                            </div>
-                            <p className="mt-1 text-zinc-700 dark:text-zinc-300">
-                              {excerpt(rev.review_text)}
-                            </p>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : null}
+                    {reviews.length === 0 ? (
+                      <div className="mt-2 space-y-2">
+                        <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                          No reviews yet.
+                        </p>
+                        <Link
+                          href={`/dashboard/reviews/new?pm_id=${encodeURIComponent(pm.id)}`}
+                          className="inline-flex w-full items-center justify-center rounded-lg bg-zinc-900 px-4 py-2.5 text-center text-sm font-medium text-white transition-colors hover:bg-zinc-800 sm:w-auto dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                        >
+                          Be the first to review
+                        </Link>
+                      </div>
+                    ) : (
+                      <>
+                        <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+                          {reviews.length} visible review
+                          {reviews.length === 1 ? "" : "s"}
+                        </p>
+                        {reviewExcerpts.length > 0 ? (
+                          <ul className="mt-3 space-y-3">
+                            {reviewExcerpts.map((rev, idx) => (
+                              <li
+                                key={`${pm.id}-${idx}`}
+                                className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                              >
+                                <div className="flex items-center gap-2">
+                                  <Stars rating={rev.overall_rating} />
+                                  <span className="text-xs text-zinc-500">
+                                    {rev.overall_rating}/5
+                                  </span>
+                                </div>
+                                <p className="mt-1 text-zinc-700 dark:text-zinc-300">
+                                  {excerpt(rev.review_text)}
+                                </p>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : null}
+                      </>
+                    )}
                   </div>
                 </li>
               );
@@ -555,6 +573,7 @@ export default function PmDirectoryPage() {
           </ul>
         )}
       </div>
+      </main>
     </div>
   );
 }

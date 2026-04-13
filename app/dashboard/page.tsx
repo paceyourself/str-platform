@@ -22,6 +22,29 @@ type PropertyRow = {
   market_id: string | null;
 };
 
+type PropertyGroupRow = {
+  id: string;
+  group_name: string | null;
+};
+
+/** Resolves dashboard scope: `all`, `group:[id]`, or a property UUID. */
+function propertyIdsForDashboardSelection(
+  selection: string,
+  properties: PropertyRow[],
+  groupMap: Record<string, string[]>
+): string[] {
+  const ownerIds = new Set(properties.map((p) => p.id));
+  if (selection === "all") {
+    return properties.map((p) => p.id);
+  }
+  if (selection.startsWith("group:")) {
+    const gid = selection.slice("group:".length);
+    return (groupMap[gid] ?? []).filter((id) => ownerIds.has(id));
+  }
+  if (ownerIds.has(selection)) return [selection];
+  return [];
+}
+
 type PmProfileNested = { company_name: string | null };
 
 type OwnerPmRow = {
@@ -293,13 +316,52 @@ function aggregateBenchmarkRevparByMonth(
   return out;
 }
 
+function AttentionBadgeLink({
+  count,
+  label,
+  href,
+}: {
+  count: number;
+  label: string;
+  href: string;
+}) {
+  const hot = count > 0;
+  return (
+    <Link
+      href={href}
+      className={[
+        "inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+        hot
+          ? "border-amber-300 bg-amber-50 text-amber-950 hover:bg-amber-100 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-100 dark:hover:bg-amber-950/70"
+          : "border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-400 dark:hover:bg-zinc-800",
+      ].join(" ")}
+    >
+      <span
+        className={[
+          "inline-flex min-w-[1.25rem] items-center justify-center rounded-full px-1.5 py-0.5 text-[11px] font-bold tabular-nums",
+          hot
+            ? "bg-amber-200 text-amber-950 dark:bg-amber-800 dark:text-amber-50"
+            : "bg-zinc-200 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200",
+        ].join(" ")}
+      >
+        {count}
+      </span>
+      <span>{label}</span>
+    </Link>
+  );
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const supabase = createClient();
 
   const [email, setEmail] = useState<string | null>(null);
   const [properties, setProperties] = useState<PropertyRow[]>([]);
-  const [selectedPropertyId, setSelectedPropertyId] = useState("");
+  const [propertyGroups, setPropertyGroups] = useState<PropertyGroupRow[]>([]);
+  const [groupPropertyIds, setGroupPropertyIds] = useState<
+    Record<string, string[]>
+  >({});
+  const [selectedScope, setSelectedScope] = useState("");
   const [propertiesLoading, setPropertiesLoading] = useState(true);
 
   const [pmRow, setPmRow] = useState<OwnerPmRow | null>(null);
@@ -323,6 +385,10 @@ export default function DashboardPage() {
   const [surveyPendingCount, setSurveyPendingCount] = useState<number | null>(
     null
   );
+  const [ticketsAwaitingCount, setTicketsAwaitingCount] = useState<
+    number | null
+  >(null);
+  const [pmRequestsCount, setPmRequestsCount] = useState<number | null>(null);
 
   const currentYear = new Date().getFullYear();
 
@@ -333,18 +399,85 @@ export default function DashboardPage() {
         data: { user },
       } = await supabase.auth.getUser();
       if (!user || cancelled) return;
-      const { count, error } = await supabase
-        .from("survey_responses")
-        .select("*", { count: "exact", head: true })
+
+      const { data: relRows, error: relErr } = await supabase
+        .from("owner_pm_relationships")
+        .select("id")
         .eq("owner_id", user.id)
-        .is("submitted_at", null);
+        .eq("active", true);
+
       if (cancelled) return;
-      if (error) {
-        console.warn(error);
+
+      const relIds =
+        relErr != null
+          ? []
+          : (relRows ?? [])
+              .map((r) => r.id as string)
+              .filter(Boolean);
+
+      const [
+        { count: surveyCount, error: surveyErr },
+        { count: awaitingCount, error: awaitingErr },
+        pmCountResult,
+      ] = await Promise.all([
+        supabase
+          .from("survey_responses")
+          .select("*", { count: "exact", head: true })
+          .eq("owner_id", user.id)
+          .is("submitted_at", null),
+        relIds.length === 0
+          ? Promise.resolve({
+              count: 0,
+              error: null as { message: string } | null,
+            })
+          : supabase
+              .from("tickets")
+              .select("*", { count: "exact", head: true })
+              .eq("owner_id", user.id)
+              .eq("direction", "owner_to_pm")
+              .eq("status", "open")
+              .is("acknowledged_at", null)
+              .in("owner_pm_relationship_id", relIds),
+        relIds.length === 0
+          ? Promise.resolve({
+              count: 0,
+              error: null as { message: string } | null,
+            })
+          : supabase
+              .from("tickets")
+              .select("*", { count: "exact", head: true })
+              .eq("direction", "pm_to_owner")
+              .eq("status", "open")
+              .in("owner_pm_relationship_id", relIds),
+      ]);
+
+      if (cancelled) return;
+
+      if (surveyErr) {
+        console.warn(surveyErr);
         setSurveyPendingCount(0);
-        return;
+      } else {
+        setSurveyPendingCount(surveyCount ?? 0);
       }
-      setSurveyPendingCount(count ?? 0);
+
+      if (relErr) {
+        console.warn(relErr);
+        setTicketsAwaitingCount(0);
+        setPmRequestsCount(0);
+      } else {
+        if (awaitingErr) {
+          console.warn(awaitingErr);
+          setTicketsAwaitingCount(0);
+        } else {
+          setTicketsAwaitingCount(awaitingCount ?? 0);
+        }
+        if (pmCountResult.error) {
+          console.warn(pmCountResult.error);
+          setPmRequestsCount(0);
+        } else {
+          setPmRequestsCount(pmCountResult.count ?? 0);
+        }
+      }
     })();
     return () => {
       cancelled = true;
@@ -400,33 +533,91 @@ export default function DashboardPage() {
     }
     setEmail(user.email ?? null);
 
-    const { data, error } = await supabase
-      .from("properties")
-      .select("id, property_name, address_line1, city, market_id")
-      .eq("owner_id", user.id)
-      .order("property_name", { ascending: true, nullsFirst: false })
-      .order("address_line1", { ascending: true, nullsFirst: false });
+    const [propsRes, groupsRes] = await Promise.all([
+      supabase
+        .from("properties")
+        .select("id, property_name, address_line1, city, market_id")
+        .eq("owner_id", user.id)
+        .order("property_name", { ascending: true, nullsFirst: false })
+        .order("address_line1", { ascending: true, nullsFirst: false }),
+      supabase
+        .from("property_groups")
+        .select("id, group_name")
+        .eq("owner_id", user.id),
+    ]);
 
     setPropertiesLoading(false);
-    if (error) {
-      console.error(error);
+    if (propsRes.error) {
+      console.error(propsRes.error);
       setProperties([]);
+      setPropertyGroups([]);
+      setGroupPropertyIds({});
       return;
     }
-    const list = data ?? [];
+    const list = (propsRes.data as PropertyRow[]) ?? [];
     if (list.length === 0) {
       router.push("/onboarding");
       return;
     }
     setProperties(list);
-    setSelectedPropertyId((prev) => {
+
+    let groupsList: PropertyGroupRow[] = [];
+    const nextGroupMap: Record<string, string[]> = {};
+    if (groupsRes.error) {
+      console.warn(groupsRes.error);
+      setPropertyGroups([]);
+      setGroupPropertyIds({});
+    } else {
+      groupsList = (groupsRes.data as PropertyGroupRow[]) ?? [];
+      setPropertyGroups(groupsList);
+      const gids = groupsList.map((g) => g.id).filter(Boolean);
+      if (gids.length > 0) {
+        const { data: memRows, error: memErr } = await supabase
+          .from("property_group_members")
+          .select("group_id, property_id")
+          .in("group_id", gids);
+        if (memErr) {
+          console.warn(memErr);
+        } else {
+          for (const row of (memRows ?? []) as {
+            group_id: string;
+            property_id: string;
+          }[]) {
+            const gid = row.group_id;
+            const pid = row.property_id;
+            if (!gid || !pid) continue;
+            if (!nextGroupMap[gid]) nextGroupMap[gid] = [];
+            nextGroupMap[gid].push(pid);
+          }
+        }
+      }
+      setGroupPropertyIds(nextGroupMap);
+    }
+
+    const showTieredSelect =
+      list.length >= 1;
+    setSelectedScope((prev) => {
+      if (showTieredSelect) {
+        if (prev === "all") return "all";
+        if (prev.startsWith("group:")) {
+          const gid = prev.slice("group:".length);
+          if (groupsList.some((g) => g.id === gid)) return prev;
+        }
+        if (list.some((p) => p.id === prev)) return prev;
+        return "all";
+      }
       if (prev && list.some((p) => p.id === prev)) return prev;
       return list[0]?.id ?? "";
     });
   }, [router, supabase]);
 
   const loadPmAndBookings = useCallback(async () => {
-    if (!selectedPropertyId) {
+    const scopeIds = propertyIdsForDashboardSelection(
+      selectedScope,
+      properties,
+      groupPropertyIds
+    );
+    if (scopeIds.length === 0) {
       setPmRow(null);
       setBookings([]);
       setBenchmarkRows([]);
@@ -436,10 +627,11 @@ export default function DashboardPage() {
     setPmLoading(true);
     setBookingsLoading(true);
 
-    const pmRes = await supabase
-      .from("owner_pm_relationships")
-      .select(
-        `
+    if (scopeIds.length === 1) {
+      const pmRes = await supabase
+        .from("owner_pm_relationships")
+        .select(
+          `
         start_date,
         contract_notice_days,
         contract_etf_exists,
@@ -447,27 +639,40 @@ export default function DashboardPage() {
         contract_maintenance_threshold,
         pm_profiles ( company_name )
       `
-      )
-      .eq("property_id", selectedPropertyId)
-      .eq("active", true)
-      .order("start_date", { ascending: false, nullsFirst: false })
-      .limit(1);
+        )
+        .eq("property_id", scopeIds[0])
+        .eq("active", true)
+        .order("start_date", { ascending: false, nullsFirst: false })
+        .limit(1);
 
-    if (pmRes.error) {
-      console.error(pmRes.error);
-      setPmRow(null);
+      if (pmRes.error) {
+        console.error(pmRes.error);
+        setPmRow(null);
+      } else {
+        const first = pmRes.data?.[0];
+        setPmRow(
+          first != null ? (first as unknown as OwnerPmRow) : null
+        );
+      }
     } else {
-      const first = pmRes.data?.[0];
-      setPmRow(
-        first != null ? (first as unknown as OwnerPmRow) : null
-      );
+      setPmRow(null);
     }
     setPmLoading(false);
 
-    const bookRes = await supabase
-      .from("bookings")
-      .select("block_type, net_owner_revenue, nights, check_in, check_out")
-      .eq("property_id", selectedPropertyId);
+    const bookRes =
+      scopeIds.length === 1
+        ? await supabase
+            .from("bookings")
+            .select(
+              "block_type, net_owner_revenue, nights, check_in, check_out"
+            )
+            .eq("property_id", scopeIds[0])
+        : await supabase
+            .from("bookings")
+            .select(
+              "block_type, net_owner_revenue, nights, check_in, check_out"
+            )
+            .in("property_id", scopeIds);
 
     if (bookRes.error) {
       console.error(bookRes.error);
@@ -481,15 +686,27 @@ export default function DashboardPage() {
       setBookings(bookings);
     }
     setBookingsLoading(false);
-  }, [selectedPropertyId, supabase]);
+  }, [groupPropertyIds, properties, selectedScope, supabase]);
 
   const loadBenchmarks = useCallback(async () => {
-    if (!selectedPropertyId) {
+    const scopeIds = propertyIdsForDashboardSelection(
+      selectedScope,
+      properties,
+      groupPropertyIds
+    );
+    if (scopeIds.length === 0) {
       setBenchmarkRows([]);
       return;
     }
-    const prop = properties.find((p) => p.id === selectedPropertyId);
-    const mid = prop?.market_id?.trim();
+    let mid: string | undefined;
+    for (const id of scopeIds) {
+      const prop = properties.find((p) => p.id === id);
+      const m = prop?.market_id?.trim();
+      if (m) {
+        mid = m;
+        break;
+      }
+    }
     if (!mid) {
       setBenchmarkRows([]);
       return;
@@ -506,7 +723,7 @@ export default function DashboardPage() {
       return;
     }
     setBenchmarkRows((data as BenchmarkRow[]) ?? []);
-  }, [properties, selectedPropertyId, supabase]);
+  }, [groupPropertyIds, properties, selectedScope, supabase]);
 
   useEffect(() => {
     loadProperties();
@@ -519,6 +736,16 @@ export default function DashboardPage() {
   useEffect(() => {
     loadBenchmarks();
   }, [loadBenchmarks]);
+
+  const selectedPropertyIds = useMemo(
+    () =>
+      propertyIdsForDashboardSelection(
+        selectedScope,
+        properties,
+        groupPropertyIds
+      ),
+    [groupPropertyIds, properties, selectedScope]
+  );
 
   const loadPmRequests = useCallback(async () => {
     setPmRequestsLoading(true);
@@ -724,6 +951,12 @@ export default function DashboardPage() {
     return [primary, p.city].filter(Boolean).join(", ");
   };
 
+  console.log("selector debug:", {
+    selectedScope,
+    propertyGroups,
+    properties,
+  });
+
   return (
     <div className="space-y-8">
       <div>
@@ -735,28 +968,71 @@ export default function DashboardPage() {
         </p>
       </div>
 
-      {surveyPendingCount != null && surveyPendingCount > 0 ? (
-        <div
-          role="status"
-          className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-100"
-        >
-          <span
-            className="inline-flex min-w-8 items-center justify-center rounded-full bg-amber-200 px-2 py-0.5 text-xs font-bold tabular-nums text-amber-950 dark:bg-amber-800 dark:text-amber-50"
-            aria-label={`${surveyPendingCount} pending`}
-          >
-            {surveyPendingCount}
-          </span>
-          <p className="min-w-0 flex-1">
-            You have {surveyPendingCount} pending survey
-            {surveyPendingCount === 1 ? "" : "s"}. Complete them to help rate
-            your property manager.
-          </p>
+      <section className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+          Quick actions
+        </h2>
+        <div className="mt-4 flex flex-wrap gap-3">
           <Link
-            href="/dashboard/surveys"
-            className="shrink-0 font-semibold text-amber-900 underline-offset-2 hover:underline dark:text-amber-50"
+            href="/dashboard/upload"
+            className="inline-flex items-center justify-center rounded-lg bg-zinc-900 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
           >
-            View surveys
+            Upload bookings
           </Link>
+          <Link
+            href="/dashboard/tickets/new"
+            className="inline-flex items-center justify-center rounded-lg border border-zinc-200 px-4 py-2.5 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
+          >
+            File a ticket
+          </Link>
+          <Link
+            href="/dashboard/reviews/new"
+            className="inline-flex items-center justify-center rounded-lg border border-zinc-200 px-4 py-2.5 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
+          >
+            Write a review
+          </Link>
+          <Link
+            href="/dashboard/properties"
+            className="inline-flex items-center justify-center rounded-lg border border-zinc-200 px-4 py-2.5 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
+          >
+            Manage properties
+          </Link>
+          <Link
+            href="/dashboard/statements/new"
+            className="inline-flex items-center justify-center rounded-lg border border-zinc-200 px-4 py-2.5 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
+          >
+            Upload statement
+          </Link>
+        </div>
+      </section>
+
+      {surveyPendingCount != null &&
+      ticketsAwaitingCount != null &&
+      pmRequestsCount != null ? (
+        <div
+          className="rounded-lg border border-zinc-200 bg-zinc-50/80 px-3 py-2.5 dark:border-zinc-800 dark:bg-zinc-900/40"
+          aria-label="Items needing your attention"
+        >
+          <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+            Needs attention
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <AttentionBadgeLink
+              count={surveyPendingCount}
+              label="Pending surveys"
+              href="/dashboard/surveys"
+            />
+            <AttentionBadgeLink
+              count={ticketsAwaitingCount}
+              label="Awaiting PM response"
+              href="/dashboard/tickets"
+            />
+            <AttentionBadgeLink
+              count={pmRequestsCount}
+              label="PM requests pending"
+              href="/dashboard/tickets"
+            />
+          </div>
         </div>
       ) : null}
 
@@ -770,7 +1046,7 @@ export default function DashboardPage() {
           <p className="mt-3 text-sm text-zinc-600 dark:text-zinc-400">
             No properties yet. Complete onboarding to add one.
           </p>
-        ) : properties.length === 1 ? (
+        ) : properties.length === 1 && propertyGroups.length === 0 ? (
           <p className="mt-3 text-sm font-medium text-zinc-900 dark:text-zinc-50">
             {propertyLabel(properties[0])}
           </p>
@@ -784,15 +1060,27 @@ export default function DashboardPage() {
             </label>
             <select
               id="property-select"
-              value={selectedPropertyId}
-              onChange={(e) => setSelectedPropertyId(e.target.value)}
+              value={selectedScope}
+              onChange={(e) => setSelectedScope(e.target.value)}
               className="block w-full max-w-md rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-900 focus:outline-none focus:ring-2 focus:ring-zinc-900/20 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50 dark:focus:border-zinc-400 dark:focus:ring-zinc-400/20"
             >
-              {properties.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {propertyLabel(p)}
-                </option>
-              ))}
+              <option value="all">All properties</option>
+              {propertyGroups.length > 0 ? (
+                <optgroup label="Groups">
+                  {propertyGroups.map((g) => (
+                    <option key={g.id} value={`group:${g.id}`}>
+                      {g.group_name?.trim() || "Unnamed group"}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : null}
+              <optgroup label="Properties">
+                {properties.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {propertyLabel(p)}
+                  </option>
+                ))}
+              </optgroup>
             </select>
           </div>
         )}
@@ -802,8 +1090,12 @@ export default function DashboardPage() {
         <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
           Current property manager
         </h2>
-        {!selectedPropertyId ? (
+        {selectedPropertyIds.length === 0 ? (
           <p className="mt-3 text-sm text-zinc-500">Select a property.</p>
+        ) : selectedPropertyIds.length > 1 ? (
+          <p className="mt-3 text-sm text-zinc-600 dark:text-zinc-400">
+            Select a single property to view PM contract details.
+          </p>
         ) : pmLoading ? (
           <p className="mt-3 text-sm text-zinc-500">Loading…</p>
         ) : !pmRow ? (
@@ -903,7 +1195,7 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {!selectedPropertyId ? (
+        {selectedPropertyIds.length === 0 ? (
           <p className="mt-3 text-sm text-zinc-500">Select a property.</p>
         ) : bookingsLoading ? (
           <p className="mt-3 text-sm text-zinc-500">Loading bookings…</p>
@@ -1077,7 +1369,7 @@ export default function DashboardPage() {
           Last 12 months — guest OTA / PM-direct revenue vs. nights available
           (calendar days minus owner stay and owner guest nights).
         </p>
-        {!selectedPropertyId ? (
+        {selectedPropertyIds.length === 0 ? (
           <p className="mt-3 text-sm text-zinc-500">Select a property.</p>
         ) : bookingsLoading ? (
           <p className="mt-3 text-sm text-zinc-500">Loading bookings…</p>
@@ -1172,44 +1464,6 @@ export default function DashboardPage() {
             ) : null}
           </>
         )}
-      </section>
-
-      <section className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-          Quick actions
-        </h2>
-        <div className="mt-4 flex flex-wrap gap-3">
-          <Link
-            href="/dashboard/upload"
-            className="inline-flex items-center justify-center rounded-lg bg-zinc-900 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
-          >
-            Upload bookings
-          </Link>
-          <Link
-            href="/dashboard/tickets/new"
-            className="inline-flex items-center justify-center rounded-lg border border-zinc-200 px-4 py-2.5 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
-          >
-            File a ticket
-          </Link>
-          <Link
-            href="/dashboard/reviews/new"
-            className="inline-flex items-center justify-center rounded-lg border border-zinc-200 px-4 py-2.5 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
-          >
-            Write a review
-          </Link>
-          <Link
-            href="/dashboard/properties"
-            className="inline-flex items-center justify-center rounded-lg border border-zinc-200 px-4 py-2.5 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
-          >
-            Manage properties
-          </Link>
-          <Link
-            href="/dashboard/statements/new"
-            className="inline-flex items-center justify-center rounded-lg border border-zinc-200 px-4 py-2.5 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
-          >
-            Upload statement
-          </Link>
-        </div>
       </section>
     </div>
   );
