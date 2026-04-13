@@ -69,7 +69,7 @@ type PropertyFieldsProps = {
   setForm: Dispatch<SetStateAction<PropertyFormState>>;
 };
 
-/** Renders fields from property name through bedroom count (inclusive). */
+/** Renders fields from property name through ZIP (inclusive). */
 export function PropertyDetailsFieldsBeforeSleeps({
   form,
   setForm,
@@ -176,7 +176,20 @@ export function PropertyDetailsFieldsBeforeSleeps({
           className="mt-1.5 block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 shadow-sm outline-none focus:border-zinc-900 focus:ring-2 focus:ring-zinc-900/20 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50 dark:focus:border-zinc-400 dark:focus:ring-zinc-400/20"
         />
       </div>
+    </>
+  );
+}
 
+/** Bedroom count (left) and Sleeps (right) on one row. */
+export function PropertyBedroomAndSleepsFields({
+  form,
+  setForm,
+}: PropertyFieldsProps) {
+  const patch = (p: Partial<PropertyFormState>) =>
+    setForm((f) => ({ ...f, ...p }));
+
+  return (
+    <div className="grid grid-cols-2 gap-4">
       <div>
         <label
           htmlFor="bedroom_count"
@@ -194,35 +207,26 @@ export function PropertyDetailsFieldsBeforeSleeps({
           className="mt-1.5 block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 shadow-sm outline-none focus:border-zinc-900 focus:ring-2 focus:ring-zinc-900/20 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50 dark:focus:border-zinc-400 dark:focus:ring-zinc-400/20"
         />
       </div>
-    </>
-  );
-}
-
-/** Sleeps — place immediately after bedroom count in the parent form. */
-export function PropertySleepsField({ form, setForm }: PropertyFieldsProps) {
-  const patch = (p: Partial<PropertyFormState>) =>
-    setForm((f) => ({ ...f, ...p }));
-
-  return (
-    <div>
-      <label
-        htmlFor="sleeps"
-        className="block text-sm font-medium text-zinc-700 dark:text-zinc-300"
-      >
-        Sleeps
-      </label>
-      <input
-        id="sleeps"
-        type="number"
-        min={1}
-        value={form.sleeps}
-        onChange={(e) => patch({ sleeps: e.target.value })}
-        placeholder="e.g. 8"
-        className="mt-1.5 block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 shadow-sm outline-none focus:border-zinc-900 focus:ring-2 focus:ring-zinc-900/20 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50 dark:focus:border-zinc-400 dark:focus:ring-zinc-400/20"
-      />
-      <p className="mt-1.5 text-sm text-zinc-500 dark:text-zinc-400">
-        Total guests the property accommodates
-      </p>
+      <div>
+        <label
+          htmlFor="sleeps"
+          className="block text-sm font-medium text-zinc-700 dark:text-zinc-300"
+        >
+          Sleeps
+        </label>
+        <input
+          id="sleeps"
+          type="number"
+          min={1}
+          value={form.sleeps}
+          onChange={(e) => patch({ sleeps: e.target.value })}
+          placeholder="e.g. 8"
+          className="mt-1.5 block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 shadow-sm outline-none focus:border-zinc-900 focus:ring-2 focus:ring-zinc-900/20 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50 dark:focus:border-zinc-400 dark:focus:ring-zinc-400/20"
+        />
+        <p className="mt-1.5 text-sm text-zinc-500 dark:text-zinc-400">
+          Total guests the property accommodates
+        </p>
+      </div>
     </div>
   );
 }
