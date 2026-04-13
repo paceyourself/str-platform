@@ -419,7 +419,7 @@ export default function DashboardPage() {
       const [
         { count: surveyCount, error: surveyErr },
         { count: awaitingCount, error: awaitingErr },
-        pmCountResult,
+        pmRequestsCountResult,
       ] = await Promise.all([
         supabase
           .from("survey_responses")
@@ -472,11 +472,11 @@ export default function DashboardPage() {
         } else {
           setTicketsAwaitingCount(awaitingCount ?? 0);
         }
-        if (pmCountResult.error) {
-          console.warn(pmCountResult.error);
+        if (pmRequestsCountResult.error) {
+          console.warn(pmRequestsCountResult.error);
           setPmRequestsCount(0);
         } else {
-          setPmRequestsCount(pmCountResult.count ?? 0);
+          setPmRequestsCount(pmRequestsCountResult.count ?? 0);
         }
       }
     })();
@@ -1001,26 +1001,30 @@ export default function DashboardPage() {
         </div>
       </section>
 
-      <div
-        className="flex flex-wrap items-center gap-2"
-        aria-label="Action summary"
-      >
-        <AttentionBadgeLink
-          count={surveyPendingCount ?? 0}
-          label="Pending surveys"
-          href="/dashboard/surveys"
-        />
-        <AttentionBadgeLink
-          count={ticketsAwaitingCount ?? 0}
-          label="Tickets awaiting PM response"
-          href="/dashboard/tickets"
-        />
-        <AttentionBadgeLink
-          count={pmRequestsCount ?? 0}
-          label="PM requests requiring action"
-          href="/dashboard/tickets"
-        />
-      </div>
+      {surveyPendingCount != null &&
+      ticketsAwaitingCount != null &&
+      pmRequestsCount != null ? (
+        <div
+          className="flex flex-wrap items-center gap-2"
+          aria-label="Action summary"
+        >
+          <AttentionBadgeLink
+            count={surveyPendingCount}
+            label="Pending surveys"
+            href="/dashboard/surveys"
+          />
+          <AttentionBadgeLink
+            count={ticketsAwaitingCount}
+            label="Tickets awaiting PM response"
+            href="/dashboard/tickets"
+          />
+          <AttentionBadgeLink
+            count={pmRequestsCount}
+            label="PM requests requiring action"
+            href="/dashboard/tickets"
+          />
+        </div>
+      ) : null}
 
       <section className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
