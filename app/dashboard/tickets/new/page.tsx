@@ -30,8 +30,56 @@ type RelRow = {
 type BookingOption = {
   id: string;
   check_in: string | null;
-  source_reservation_id: string | null;
+  booked_date: string | null;
+  channel: string | null;
+  raw_type_label: string | null;
 };
+
+/** MM/DD/YYYY from Postgres date / ISO string (calendar date, no TZ shift). */
+function toMmDdYyyy(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  const s = String(value).trim();
+  if (!s) return null;
+  const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (iso) {
+    return `${iso[2]}/${iso[3]}/${iso[1]}`;
+  }
+  return null;
+}
+
+function checkInSortValue(checkIn: string | null): number {
+  if (checkIn == null) return Number.NEGATIVE_INFINITY;
+  const s = String(checkIn).trim();
+  if (!s) return Number.NEGATIVE_INFINITY;
+  const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (iso) {
+    return Date.UTC(
+      Number(iso[1]),
+      Number(iso[2]) - 1,
+      Number(iso[3])
+    );
+  }
+  const t = Date.parse(s);
+  return Number.isNaN(t) ? Number.NEGATIVE_INFINITY : t;
+}
+
+function bookingOptionLabel(b: BookingOption): string {
+  const parts: string[] = [];
+  const cin = toMmDdYyyy(b.check_in);
+  if (cin) {
+    parts.push(`Check-in: ${cin}`);
+  }
+  const channelOrType =
+    (b.channel ?? "").trim() || (b.raw_type_label ?? "").trim();
+  if (channelOrType) {
+    parts.push(channelOrType);
+  }
+  const booked = toMmDdYyyy(b.booked_date);
+  if (booked) {
+    parts.push(`Booked: ${booked}`);
+  }
+  return parts.length > 0 ? parts.join(" · ") : `Booking ${b.id.slice(0, 8)}…`;
+}
 
 function propertyLabel(p: PropertyRow) {
   const primary =
@@ -149,13 +197,20 @@ export default function NewOwnerTicketPage() {
 
       const bookRes = await supabase
         .from("bookings")
-        .select("id, check_in, source_reservation_id")
+        .select("id, check_in, booked_date, channel, raw_type_label")
         .eq("property_id", propertyId)
         .order("check_in", { ascending: false, nullsFirst: false })
         .limit(200);
 
       if (!cancelled) {
-        setBookings((bookRes.data as BookingOption[]) ?? []);
+        const rows = (bookRes.data as BookingOption[]) ?? [];
+        rows.sort((a, b) => {
+          const vb = checkInSortValue(b.check_in);
+          const va = checkInSortValue(a.check_in);
+          if (vb !== va) return vb - va;
+          return b.id.localeCompare(a.id);
+        });
+        setBookings(rows);
       }
     })();
     return () => {
@@ -367,21 +422,11 @@ export default function NewOwnerTicketPage() {
             className="mt-1.5 block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50"
           >
             <option value="">None</option>
-            {bookings.map((b) => {
-              const cin = b.check_in
-                ? new Date(b.check_in).toLocaleDateString(undefined, {
-                    year: "numeric",
-                    month: "short",
-                    day: "numeric",
-                  })
-                : "—";
-              const rid = b.source_reservation_id?.trim() || "No reservation id";
-              return (
-                <option key={b.id} value={b.id}>
-                  {cin} · {rid}
-                </option>
-              );
-            })}
+            {bookings.map((b) => (
+              <option key={b.id} value={b.id}>
+                {bookingOptionLabel(b)}
+              </option>
+            ))}
           </select>
         </div>
 
