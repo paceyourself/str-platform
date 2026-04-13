@@ -7,7 +7,9 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import {
   BEACH_PROXIMITY,
   PROPERTY_TYPES,
-  PropertyDetailsFields,
+  PropertyDetailsFieldsAfterSleeps,
+  PropertyDetailsFieldsBeforeSleeps,
+  PropertySleepsField,
   emptyPropertyForm,
   validatePropertyForm,
   type PropertyFormState,
@@ -196,7 +198,11 @@ export default function EditPropertyPage() {
           </div>
         ) : null}
 
-        <PropertyDetailsFields form={form} setForm={setForm} />
+        <div className="space-y-5">
+          <PropertyDetailsFieldsBeforeSleeps form={form} setForm={setForm} />
+          <PropertySleepsField form={form} setForm={setForm} />
+          <PropertyDetailsFieldsAfterSleeps form={form} setForm={setForm} />
+        </div>
 
         <div>
           <label

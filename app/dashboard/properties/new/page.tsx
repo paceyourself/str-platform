@@ -6,7 +6,9 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import {
   MARKET,
-  PropertyDetailsFields,
+  PropertyDetailsFieldsAfterSleeps,
+  PropertyDetailsFieldsBeforeSleeps,
+  PropertySleepsField,
   emptyPropertyForm,
   validatePropertyForm,
   type PropertyFormState,
@@ -144,7 +146,11 @@ export default function NewPropertyPage() {
 
         <input type="hidden" name="market_id" value={MARKET} />
 
-        <PropertyDetailsFields form={form} setForm={setForm} />
+        <div className="space-y-5">
+          <PropertyDetailsFieldsBeforeSleeps form={form} setForm={setForm} />
+          <PropertySleepsField form={form} setForm={setForm} />
+          <PropertyDetailsFieldsAfterSleeps form={form} setForm={setForm} />
+        </div>
 
         <div>
           <label
