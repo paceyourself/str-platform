@@ -381,6 +381,7 @@ export default function DashboardPage() {
   const [pmRequestActionId, setPmRequestActionId] = useState<string | null>(
     null
   );
+  const [pmContractExpanded, setPmContractExpanded] = useState(false);
 
   const [surveyPendingCount, setSurveyPendingCount] = useState<number | null>(
     null
@@ -951,12 +952,6 @@ export default function DashboardPage() {
     return [primary, p.city].filter(Boolean).join(", ");
   };
 
-  console.log("selector debug:", {
-    selectedScope,
-    propertyGroups,
-    properties,
-  });
-
   return (
     <div className="space-y-8">
       <div>
@@ -1006,35 +1001,26 @@ export default function DashboardPage() {
         </div>
       </section>
 
-      {surveyPendingCount != null &&
-      ticketsAwaitingCount != null &&
-      pmRequestsCount != null ? (
-        <div
-          className="rounded-lg border border-zinc-200 bg-zinc-50/80 px-3 py-2.5 dark:border-zinc-800 dark:bg-zinc-900/40"
-          aria-label="Items needing your attention"
-        >
-          <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-            Needs attention
-          </p>
-          <div className="flex flex-wrap gap-2">
-            <AttentionBadgeLink
-              count={surveyPendingCount}
-              label="Pending surveys"
-              href="/dashboard/surveys"
-            />
-            <AttentionBadgeLink
-              count={ticketsAwaitingCount}
-              label="Awaiting PM response"
-              href="/dashboard/tickets"
-            />
-            <AttentionBadgeLink
-              count={pmRequestsCount}
-              label="PM requests pending"
-              href="/dashboard/tickets"
-            />
-          </div>
-        </div>
-      ) : null}
+      <div
+        className="flex flex-wrap items-center gap-2"
+        aria-label="Action summary"
+      >
+        <AttentionBadgeLink
+          count={surveyPendingCount ?? 0}
+          label="Pending surveys"
+          href="/dashboard/surveys"
+        />
+        <AttentionBadgeLink
+          count={ticketsAwaitingCount ?? 0}
+          label="Tickets awaiting PM response"
+          href="/dashboard/tickets"
+        />
+        <AttentionBadgeLink
+          count={pmRequestsCount ?? 0}
+          label="PM requests requiring action"
+          href="/dashboard/tickets"
+        />
+      </div>
 
       <section className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
@@ -1103,64 +1089,88 @@ export default function DashboardPage() {
             No PM associated
           </p>
         ) : (
-          <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
-            <div>
-              <dt className="text-zinc-500 dark:text-zinc-400">Company</dt>
-              <dd className="font-medium text-zinc-900 dark:text-zinc-50">
-                {pmProfileCompanyName(pmRow.pm_profiles) ?? "—"}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-zinc-500 dark:text-zinc-400">
-                Contract start
-              </dt>
-              <dd className="font-medium text-zinc-900 dark:text-zinc-50">
-                {formatDate(pmRow.start_date)}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-zinc-500 dark:text-zinc-400">
-                Notice period (days)
-              </dt>
-              <dd className="font-medium text-zinc-900 dark:text-zinc-50">
-                {pmRow.contract_notice_days ?? "—"}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-zinc-500 dark:text-zinc-400">
-                Early termination fee
-              </dt>
-              <dd className="font-medium text-zinc-900 dark:text-zinc-50">
-                {pmRow.contract_etf_exists === true
-                  ? "Yes"
-                  : pmRow.contract_etf_exists === false
-                    ? "No"
-                    : "—"}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-zinc-500 dark:text-zinc-400">
-                Maintenance approval threshold
-              </dt>
-              <dd className="font-medium text-zinc-900 dark:text-zinc-50">
-                {formatMaintenanceThreshold(
-                  pmRow.contract_maintenance_threshold
-                )}
-              </dd>
-            </div>
-            <div className="sm:col-span-2">
-              <dt className="text-zinc-500 dark:text-zinc-400">
-                Listing transfer on exit
-              </dt>
-              <dd className="font-medium text-zinc-900 dark:text-zinc-50">
-                {pmRow.contract_listing_transfer === true
-                  ? "Yes"
-                  : pmRow.contract_listing_transfer === false
-                    ? "No"
-                    : "—"}
-              </dd>
-            </div>
-          </dl>
+          <div className="mt-3">
+            <button
+              type="button"
+              onClick={() => setPmContractExpanded((v) => !v)}
+              aria-expanded={pmContractExpanded}
+              className="flex w-full items-center gap-2 rounded-lg text-left transition-colors hover:bg-zinc-50 dark:hover:bg-zinc-900/50"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+                  <span className="font-semibold text-zinc-900 dark:text-zinc-50">
+                    {pmProfileCompanyName(pmRow.pm_profiles) ?? "—"}
+                  </span>
+                  <span className="text-sm text-zinc-600 dark:text-zinc-400">
+                    Contract start{" "}
+                    <span className="font-medium text-zinc-800 dark:text-zinc-200">
+                      {formatDate(pmRow.start_date)}
+                    </span>
+                  </span>
+                </div>
+              </div>
+              <svg
+                className={`size-5 shrink-0 text-zinc-500 transition-transform dark:text-zinc-400 ${
+                  pmContractExpanded ? "rotate-180" : ""
+                }`}
+                viewBox="0 0 20 20"
+                fill="currentColor"
+                aria-hidden
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
+                  clipRule="evenodd"
+                />
+              </svg>
+            </button>
+            {pmContractExpanded ? (
+              <dl className="mt-3 grid gap-3 border-t border-zinc-200 pt-3 text-sm sm:grid-cols-2 dark:border-zinc-700">
+                <div>
+                  <dt className="text-zinc-500 dark:text-zinc-400">
+                    Notice period (days)
+                  </dt>
+                  <dd className="font-medium text-zinc-900 dark:text-zinc-50">
+                    {pmRow.contract_notice_days ?? "—"}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-zinc-500 dark:text-zinc-400">
+                    Early termination fee
+                  </dt>
+                  <dd className="font-medium text-zinc-900 dark:text-zinc-50">
+                    {pmRow.contract_etf_exists === true
+                      ? "Yes"
+                      : pmRow.contract_etf_exists === false
+                        ? "No"
+                        : "—"}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-zinc-500 dark:text-zinc-400">
+                    Maintenance approval threshold
+                  </dt>
+                  <dd className="font-medium text-zinc-900 dark:text-zinc-50">
+                    {formatMaintenanceThreshold(
+                      pmRow.contract_maintenance_threshold
+                    )}
+                  </dd>
+                </div>
+                <div className="sm:col-span-2">
+                  <dt className="text-zinc-500 dark:text-zinc-400">
+                    Listing transfer on exit
+                  </dt>
+                  <dd className="font-medium text-zinc-900 dark:text-zinc-50">
+                    {pmRow.contract_listing_transfer === true
+                      ? "Yes"
+                      : pmRow.contract_listing_transfer === false
+                        ? "No"
+                        : "—"}
+                  </dd>
+                </div>
+              </dl>
+            ) : null}
+          </div>
         )}
       </section>
 
