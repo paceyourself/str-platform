@@ -22,48 +22,37 @@ type PropertyRow = {
   market_id: string | null;
 };
 
-type PropertyGroupRow = {
-  id: string;
-  group_name: string | null;
-};
-
-/** Resolves dashboard scope: `all`, `group:[id]`, or a property UUID. */
-function propertyIdsForDashboardSelection(
-  selection: string,
-  properties: PropertyRow[],
-  groupMap: Record<string, string[]>
-): string[] {
-  const ownerIds = new Set(properties.map((p) => p.id));
-  if (selection === "all") {
-    return properties.map((p) => p.id);
-  }
-  if (selection.startsWith("group:")) {
-    const gid = selection.slice("group:".length);
-    return (groupMap[gid] ?? []).filter((id) => ownerIds.has(id));
-  }
-  if (ownerIds.has(selection)) return [selection];
-  return [];
-}
-
 type PmProfileNested = { company_name: string | null };
 
-type OwnerPmRow = {
+type OwnerPmSummaryRow = {
+  id: string;
+  property_id: string;
+  pm_id: string;
   start_date: string | null;
-  contract_notice_days: number | null;
-  contract_etf_exists: boolean | null;
-  contract_listing_transfer: boolean | null;
-  contract_maintenance_threshold: number | string | null;
-  /** PostgREST may return one object or an array for embedded relations */
   pm_profiles: PmProfileNested | PmProfileNested[] | null;
+  properties:
+    | { property_name: string | null; address_line1: string | null; city: string | null }
+    | { property_name: string | null; address_line1: string | null; city: string | null }[]
+    | null;
 };
 
-function pmProfileCompanyName(
-  nested: OwnerPmRow["pm_profiles"]
-): string | null {
+function pmProfileCompanyName(nested: PmProfileNested | PmProfileNested[] | null): string | null {
   if (nested == null) return null;
   const p = Array.isArray(nested) ? nested[0] : nested;
   return p?.company_name ?? null;
 }
+
+function pmSummaryPropertyName(row: OwnerPmSummaryRow): string {
+  const p = row.properties == null ? null : Array.isArray(row.properties) ? row.properties[0] : row.properties;
+  return p?.property_name?.trim() || p?.address_line1?.trim() || "Property";
+}
+
+type GroupedPmSummary = {
+  pmId: string;
+  companyName: string;
+  propertyNames: string[];
+  contractStart: string | null;
+};
 
 type BookingRow = {
   block_type: string | null;
@@ -79,65 +68,6 @@ type BenchmarkRow = {
   week_number: number | null;
   benchmark_revpar: number | string | null;
 };
-
-const PM_REQUEST_TYPE_LABELS: Record<string, string> = {
-  maintenance_work_order: "Maintenance work order",
-  vendor_selection: "Vendor selection",
-  guest_decision: "Guest decision",
-  owner_action_required: "Owner action required",
-};
-
-/** Nested embed from PostgREST; fields optional so query rows align with Supabase client inference. */
-type PmRequestPropertiesEmbed = {
-  property_name?: string | null;
-};
-
-type PmRequestOwnerPmRelEmbed = {
-  contract_maintenance_threshold?: number | string | null;
-  properties?:
-    | PmRequestPropertiesEmbed
-    | PmRequestPropertiesEmbed[]
-    | null;
-};
-
-/** Shape of `tickets` rows from loadPmRequests select (pm_to_owner). */
-type PmRequestTicketRow = {
-  id: string;
-  request_type: string | null;
-  title: string;
-  description: string | null;
-  dollar_amount: number | string | null;
-  status: string;
-  created_at: string;
-  proposed_vendor: string | null;
-  direction: string;
-  owner_pm_relationships?:
-    | PmRequestOwnerPmRelEmbed
-    | PmRequestOwnerPmRelEmbed[]
-    | null;
-};
-
-function pmRequestPropertyName(t: PmRequestTicketRow): string {
-  const rel = t.owner_pm_relationships;
-  const r = rel == null ? null : Array.isArray(rel) ? rel[0] : rel;
-  const p = r?.properties;
-  const prop = p == null ? null : Array.isArray(p) ? p[0] : p;
-  return prop?.property_name?.trim() || "Property";
-}
-
-function pmRequestExceedsThreshold(t: PmRequestTicketRow): boolean {
-  const raw = t.dollar_amount;
-  if (raw == null || raw === "") return false;
-  const n = typeof raw === "number" ? raw : Number(raw);
-  if (!Number.isFinite(n) || n <= 0) return false;
-  const rel = t.owner_pm_relationships;
-  const r = rel == null ? null : Array.isArray(rel) ? rel[0] : rel;
-  const th = r?.contract_maintenance_threshold;
-  if (th == null) return false;
-  const limit = typeof th === "number" ? th : Number(th);
-  if (!Number.isFinite(limit)) return false;
-  return n > limit;
-}
 
 const GUEST_BLOCK_TYPES = new Set(["guest_ota", "guest_pm_direct"]);
 
@@ -191,15 +121,6 @@ function formatMoneyCompact(n: number) {
     currency: "USD",
     maximumFractionDigits: 2,
   }).format(n);
-}
-
-function formatMaintenanceThreshold(
-  value: number | string | null | undefined
-): string {
-  if (value == null) return "Not specified";
-  const n = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(n)) return "Not specified";
-  return formatMoney(n);
 }
 
 /** Last 12 calendar months ending at current month, oldest first. */
@@ -357,14 +278,9 @@ export default function DashboardPage() {
 
   const [email, setEmail] = useState<string | null>(null);
   const [properties, setProperties] = useState<PropertyRow[]>([]);
-  const [propertyGroups, setPropertyGroups] = useState<PropertyGroupRow[]>([]);
-  const [groupPropertyIds, setGroupPropertyIds] = useState<
-    Record<string, string[]>
-  >({});
-  const [selectedScope, setSelectedScope] = useState("");
   const [propertiesLoading, setPropertiesLoading] = useState(true);
 
-  const [pmRow, setPmRow] = useState<OwnerPmRow | null>(null);
+  const [pmRows, setPmRows] = useState<OwnerPmSummaryRow[]>([]);
   const [pmLoading, setPmLoading] = useState(false);
 
   const [bookings, setBookings] = useState<BookingRow[]>([]);
@@ -375,14 +291,6 @@ export default function DashboardPage() {
 
   const [timeRange, setTimeRange] = useState<"year" | "all">("year");
 
-  const [pmRequests, setPmRequests] = useState<PmRequestTicketRow[]>([]);
-  const [pmRequestsLoading, setPmRequestsLoading] = useState(false);
-  const [pmRequestsError, setPmRequestsError] = useState<string | null>(null);
-  const [pmRequestActionId, setPmRequestActionId] = useState<string | null>(
-    null
-  );
-  const [pmContractExpanded, setPmContractExpanded] = useState(false);
-
   const [surveyPendingCount, setSurveyPendingCount] = useState<number | null>(
     null
   );
@@ -390,6 +298,11 @@ export default function DashboardPage() {
     number | null
   >(null);
   const [pmRequestsCount, setPmRequestsCount] = useState<number | null>(null);
+  const [resolvedThisMonthCount, setResolvedThisMonthCount] = useState<
+    number | null
+  >(null);
+  const [dataGapRows, setDataGapRows] = useState<PropertyRow[]>([]);
+  const [dataGapsLoading, setDataGapsLoading] = useState(false);
 
   const currentYear = new Date().getFullYear();
 
@@ -415,11 +328,15 @@ export default function DashboardPage() {
           : (relRows ?? [])
               .map((r) => r.id as string)
               .filter(Boolean);
+      const monthStart = new Date();
+      monthStart.setDate(1);
+      monthStart.setHours(0, 0, 0, 0);
 
       const [
         { count: surveyCount, error: surveyErr },
         { count: awaitingCount, error: awaitingErr },
         pmRequestsCountResult,
+        resolvedCountResult,
       ] = await Promise.all([
         supabase
           .from("survey_responses")
@@ -450,6 +367,17 @@ export default function DashboardPage() {
               .eq("direction", "pm_to_owner")
               .in("status", ["open", "acknowledged"])
               .in("owner_pm_relationship_id", relIds),
+        relIds.length === 0
+          ? Promise.resolve({
+              count: 0,
+              error: null as { message: string } | null,
+            })
+          : supabase
+              .from("tickets")
+              .select("*", { count: "exact", head: true })
+              .in("owner_pm_relationship_id", relIds)
+              .eq("status", "resolved")
+              .gte("resolved_at", monthStart.toISOString()),
       ]);
 
       if (cancelled) return;
@@ -465,6 +393,7 @@ export default function DashboardPage() {
         console.warn(relErr);
         setTicketsAwaitingCount(0);
         setPmRequestsCount(0);
+        setResolvedThisMonthCount(0);
       } else {
         if (awaitingErr) {
           console.warn(awaitingErr);
@@ -477,6 +406,12 @@ export default function DashboardPage() {
           setPmRequestsCount(0);
         } else {
           setPmRequestsCount(pmRequestsCountResult.count ?? 0);
+        }
+        if (resolvedCountResult.error) {
+          console.warn(resolvedCountResult.error);
+          setResolvedThisMonthCount(0);
+        } else {
+          setResolvedThisMonthCount(resolvedCountResult.count ?? 0);
         }
       }
     })();
@@ -534,25 +469,17 @@ export default function DashboardPage() {
     }
     setEmail(user.email ?? null);
 
-    const [propsRes, groupsRes] = await Promise.all([
-      supabase
-        .from("properties")
-        .select("id, property_name, address_line1, city, market_id")
-        .eq("owner_id", user.id)
-        .order("property_name", { ascending: true, nullsFirst: false })
-        .order("address_line1", { ascending: true, nullsFirst: false }),
-      supabase
-        .from("property_groups")
-        .select("id, group_name")
-        .eq("owner_id", user.id),
-    ]);
+    const propsRes = await supabase
+      .from("properties")
+      .select("id, property_name, address_line1, city, market_id")
+      .eq("owner_id", user.id)
+      .order("property_name", { ascending: true, nullsFirst: false })
+      .order("address_line1", { ascending: true, nullsFirst: false });
 
     setPropertiesLoading(false);
     if (propsRes.error) {
       console.error(propsRes.error);
       setProperties([]);
-      setPropertyGroups([]);
-      setGroupPropertyIds({});
       return;
     }
     const list = (propsRes.data as PropertyRow[]) ?? [];
@@ -561,65 +488,12 @@ export default function DashboardPage() {
       return;
     }
     setProperties(list);
-
-    let groupsList: PropertyGroupRow[] = [];
-    const nextGroupMap: Record<string, string[]> = {};
-    if (groupsRes.error) {
-      console.warn(groupsRes.error);
-      setPropertyGroups([]);
-      setGroupPropertyIds({});
-    } else {
-      groupsList = (groupsRes.data as PropertyGroupRow[]) ?? [];
-      setPropertyGroups(groupsList);
-      const gids = groupsList.map((g) => g.id).filter(Boolean);
-      if (gids.length > 0) {
-        const { data: memRows, error: memErr } = await supabase
-          .from("property_group_members")
-          .select("group_id, property_id")
-          .in("group_id", gids);
-        if (memErr) {
-          console.warn(memErr);
-        } else {
-          for (const row of (memRows ?? []) as {
-            group_id: string;
-            property_id: string;
-          }[]) {
-            const gid = row.group_id;
-            const pid = row.property_id;
-            if (!gid || !pid) continue;
-            if (!nextGroupMap[gid]) nextGroupMap[gid] = [];
-            nextGroupMap[gid].push(pid);
-          }
-        }
-      }
-      setGroupPropertyIds(nextGroupMap);
-    }
-
-    const showTieredSelect =
-      list.length >= 1;
-    setSelectedScope((prev) => {
-      if (showTieredSelect) {
-        if (prev === "all") return "all";
-        if (prev.startsWith("group:")) {
-          const gid = prev.slice("group:".length);
-          if (groupsList.some((g) => g.id === gid)) return prev;
-        }
-        if (list.some((p) => p.id === prev)) return prev;
-        return "all";
-      }
-      if (prev && list.some((p) => p.id === prev)) return prev;
-      return list[0]?.id ?? "";
-    });
   }, [router, supabase]);
 
   const loadPmAndBookings = useCallback(async () => {
-    const scopeIds = propertyIdsForDashboardSelection(
-      selectedScope,
-      properties,
-      groupPropertyIds
-    );
-    if (scopeIds.length === 0) {
-      setPmRow(null);
+    const propertyIds = properties.map((p) => p.id).filter(Boolean);
+    if (propertyIds.length === 0) {
+      setPmRows([]);
       setBookings([]);
       setBenchmarkRows([]);
       return;
@@ -628,86 +502,53 @@ export default function DashboardPage() {
     setPmLoading(true);
     setBookingsLoading(true);
 
-    if (scopeIds.length === 1) {
-      const pmRes = await supabase
+    const [pmRes, bookRes] = await Promise.all([
+      supabase
         .from("owner_pm_relationships")
         .select(
           `
-        start_date,
-        contract_notice_days,
-        contract_etf_exists,
-        contract_listing_transfer,
-        contract_maintenance_threshold,
-        pm_profiles ( company_name )
-      `
+          id,
+          property_id,
+          pm_id,
+          start_date,
+          pm_profiles ( company_name ),
+          properties ( property_name, address_line1, city )
+        `
         )
-        .eq("property_id", scopeIds[0])
         .eq("active", true)
-        .order("start_date", { ascending: false, nullsFirst: false })
-        .limit(1);
+        .in("property_id", propertyIds)
+        .order("start_date", { ascending: false, nullsFirst: false }),
+      supabase
+        .from("bookings")
+        .select("block_type, net_owner_revenue, nights, check_in, check_out")
+        .in("property_id", propertyIds),
+    ]);
 
-      if (pmRes.error) {
-        console.error(pmRes.error);
-        setPmRow(null);
-      } else {
-        const first = pmRes.data?.[0];
-        setPmRow(
-          first != null ? (first as unknown as OwnerPmRow) : null
-        );
-      }
+    if (pmRes.error) {
+      console.error(pmRes.error);
+      setPmRows([]);
     } else {
-      setPmRow(null);
+      const latestByProperty = new Map<string, OwnerPmSummaryRow>();
+      for (const row of (pmRes.data ?? []) as OwnerPmSummaryRow[]) {
+        const pid = String(row.property_id ?? "");
+        if (!pid || latestByProperty.has(pid)) continue;
+        latestByProperty.set(pid, row);
+      }
+      setPmRows([...latestByProperty.values()]);
     }
     setPmLoading(false);
-
-    const bookRes =
-      scopeIds.length === 1
-        ? await supabase
-            .from("bookings")
-            .select(
-              "block_type, net_owner_revenue, nights, check_in, check_out"
-            )
-            .eq("property_id", scopeIds[0])
-        : await supabase
-            .from("bookings")
-            .select(
-              "block_type, net_owner_revenue, nights, check_in, check_out"
-            )
-            .in("property_id", scopeIds);
 
     if (bookRes.error) {
       console.error(bookRes.error);
       setBookings([]);
     } else {
-      const bookings = (bookRes.data as BookingRow[]) ?? [];
-      console.log(
-        "Block types found:",
-        [...new Set(bookings.map((b) => b.block_type))]
-      );
-      setBookings(bookings);
+      setBookings((bookRes.data as BookingRow[]) ?? []);
     }
     setBookingsLoading(false);
-  }, [groupPropertyIds, properties, selectedScope, supabase]);
+  }, [properties, supabase]);
 
   const loadBenchmarks = useCallback(async () => {
-    const scopeIds = propertyIdsForDashboardSelection(
-      selectedScope,
-      properties,
-      groupPropertyIds
-    );
-    if (scopeIds.length === 0) {
-      setBenchmarkRows([]);
-      return;
-    }
-    let mid: string | undefined;
-    for (const id of scopeIds) {
-      const prop = properties.find((p) => p.id === id);
-      const m = prop?.market_id?.trim();
-      if (m) {
-        mid = m;
-        break;
-      }
-    }
+    const mid = properties.find((p) => (p.market_id ?? "").trim())?.market_id?.trim();
     if (!mid) {
       setBenchmarkRows([]);
       return;
@@ -724,7 +565,7 @@ export default function DashboardPage() {
       return;
     }
     setBenchmarkRows((data as BenchmarkRow[]) ?? []);
-  }, [groupPropertyIds, properties, selectedScope, supabase]);
+  }, [properties, supabase]);
 
   useEffect(() => {
     loadProperties();
@@ -738,120 +579,47 @@ export default function DashboardPage() {
     loadBenchmarks();
   }, [loadBenchmarks]);
 
-  const selectedPropertyIds = useMemo(
-    () =>
-      propertyIdsForDashboardSelection(
-        selectedScope,
-        properties,
-        groupPropertyIds
-      ),
-    [groupPropertyIds, properties, selectedScope]
-  );
-
-  const loadPmRequests = useCallback(async () => {
-    setPmRequestsLoading(true);
-    setPmRequestsError(null);
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) {
-      setPmRequestsLoading(false);
-      setPmRequests([]);
-      return;
-    }
-
-    const { data: rels, error: relErr } = await supabase
-      .from("owner_pm_relationships")
-      .select("id")
-      .eq("owner_id", user.id)
-      .eq("active", true);
-
-    if (relErr) {
-      setPmRequestsLoading(false);
-      setPmRequestsError(relErr.message);
-      setPmRequests([]);
-      return;
-    }
-
-    const relIds = (rels ?? []).map((r) => r.id as string).filter(Boolean);
-    if (relIds.length === 0) {
-      setPmRequestsLoading(false);
-      setPmRequests([]);
-      return;
-    }
-
-    const { data: tickets, error: tErr } = await supabase
-      .from("tickets")
-      .select(
-        `
-        id,
-        request_type,
-        title,
-        description,
-        dollar_amount,
-        status,
-        created_at,
-        proposed_vendor,
-        direction,
-        owner_pm_relationships (
-          contract_maintenance_threshold,
-          properties ( property_name )
-        )
-      `
-      )
-      .eq("direction", "pm_to_owner")
-      .in("owner_pm_relationship_id", relIds)
-      .order("created_at", { ascending: false });
-
-    setPmRequestsLoading(false);
-    if (tErr) {
-      setPmRequestsError(tErr.message);
-      setPmRequests([]);
-      return;
-    }
-    setPmRequests((tickets as PmRequestTicketRow[]) ?? []);
-  }, [supabase]);
-
   useEffect(() => {
-    loadPmRequests();
-  }, [loadPmRequests]);
-
-  const approvePmRequest = async (id: string) => {
-    setPmRequestActionId(id);
-    const { error } = await supabase
-      .from("tickets")
-      .update({
-        status: "acknowledged",
-        acknowledged_at: new Date().toISOString(),
-      })
-      .eq("id", id)
-      .eq("status", "open");
-    setPmRequestActionId(null);
-    if (error) {
-      alert(error.message);
-      return;
-    }
-    loadPmRequests();
-  };
-
-  const declinePmRequest = async (id: string) => {
-    setPmRequestActionId(id);
-    const { error } = await supabase
-      .from("tickets")
-      .update({
-        status: "resolved",
-        resolved_at: new Date().toISOString(),
-        resolution_note: "Declined by owner",
-      })
-      .eq("id", id)
-      .eq("status", "open");
-    setPmRequestActionId(null);
-    if (error) {
-      alert(error.message);
-      return;
-    }
-    loadPmRequests();
-  };
+    let cancelled = false;
+    (async () => {
+      if (properties.length === 0) {
+        setDataGapRows([]);
+        return;
+      }
+      setDataGapsLoading(true);
+      const propertyIds = properties.map((p) => p.id).filter(Boolean);
+      const { data, error } = await supabase
+        .from("upload_batches")
+        .select("property_id, created_at")
+        .in("property_id", propertyIds);
+      setDataGapsLoading(false);
+      if (cancelled) return;
+      if (error) {
+        console.warn(error);
+        setDataGapRows([]);
+        return;
+      }
+      const latestByProperty = new Map<string, string>();
+      for (const row of (data ?? []) as { property_id: string; created_at: string }[]) {
+        const pid = String(row.property_id ?? "");
+        const ts = String(row.created_at ?? "");
+        if (!pid || !ts) continue;
+        const cur = latestByProperty.get(pid);
+        if (!cur || ts > cur) latestByProperty.set(pid, ts);
+      }
+      const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+      const gaps = properties.filter((p) => {
+        const latest = latestByProperty.get(p.id);
+        if (!latest) return true;
+        const t = Date.parse(latest);
+        return Number.isNaN(t) || t < cutoff;
+      });
+      setDataGapRows(gaps);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [properties, supabase]);
 
   const filteredBookings = useMemo(() => {
     if (timeRange === "all") return bookings;
@@ -888,6 +656,110 @@ export default function DashboardPage() {
       ownerStays,
     };
   }, [filteredBookings]);
+
+  const performanceRevpar = useMemo(() => {
+    const now = new Date();
+    const curMonths: { key: string; year: number; month: number }[] = [];
+    const prevMonths: { key: string; year: number; month: number }[] = [];
+    for (let i = 11; i >= 0; i -= 1) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const year = d.getFullYear();
+      const month = d.getMonth() + 1;
+      curMonths.push({
+        key: `${year}-${String(month).padStart(2, "0")}`,
+        year,
+        month,
+      });
+      const pd = new Date(year - 1, month - 1, 1);
+      prevMonths.push({
+        key: `${pd.getFullYear()}-${String(pd.getMonth() + 1).padStart(2, "0")}`,
+        year: pd.getFullYear(),
+        month: pd.getMonth() + 1,
+      });
+    }
+
+    const guestBookings = bookings.filter((b) => isGuestBooking(b.block_type));
+    const ownerBlocks = bookings.filter((b) => {
+      const t = (b.block_type ?? "").trim().toLowerCase();
+      return t === "owner_stay" || t === "owner_guest";
+    });
+
+    function revparFor(months: { key: string; year: number; month: number }[]) {
+      let guestRevenue = 0;
+      let availableNights = 0;
+      for (const m of months) {
+        for (const b of guestBookings) {
+          if (monthKeyFromCheckIn(b.check_in) === m.key) {
+            guestRevenue += Number(b.net_owner_revenue) || 0;
+          }
+        }
+        let ownerNights = 0;
+        for (const b of ownerBlocks) {
+          ownerNights += countOwnerNightsInMonth(
+            b.check_in,
+            b.check_out,
+            Number(b.nights) || 0,
+            m.key
+          );
+        }
+        const dim = daysInCalendarMonth(m.year, m.month);
+        availableNights += Math.max(0, dim - ownerNights);
+      }
+      return availableNights > 0 ? guestRevenue / availableNights : null;
+    }
+
+    const currentRevpar = revparFor(curMonths);
+    const priorRevpar = revparFor(prevMonths);
+    const priorKeySet = new Set(prevMonths.map((m) => m.key));
+    const priorMonthsWithData = new Set(
+      bookings
+        .map((b) => monthKeyFromCheckIn(b.check_in))
+        .filter((k): k is string => Boolean(k && priorKeySet.has(k)))
+    ).size;
+    const hasPriorData = priorMonthsWithData > 0 && priorRevpar != null;
+    const pct =
+      hasPriorData && priorRevpar !== 0 && currentRevpar != null
+        ? ((currentRevpar - priorRevpar) / priorRevpar) * 100
+        : null;
+    const estimated = hasPriorData && priorMonthsWithData < 6;
+    return {
+      currentRevpar,
+      pct,
+      estimated,
+      hasPriorData,
+    };
+  }, [bookings]);
+
+  const groupedPmRows = useMemo<GroupedPmSummary[]>(() => {
+    const byPm = new Map<string, GroupedPmSummary>();
+    for (const row of pmRows) {
+      const pmId = String(row.pm_id ?? "").trim();
+      if (!pmId) continue;
+      const propertyName = pmSummaryPropertyName(row);
+      const companyName = pmProfileCompanyName(row.pm_profiles) ?? "—";
+      const existing = byPm.get(pmId);
+      if (!existing) {
+        byPm.set(pmId, {
+          pmId,
+          companyName,
+          propertyNames: [propertyName],
+          contractStart: row.start_date ?? null,
+        });
+        continue;
+      }
+      if (!existing.propertyNames.includes(propertyName)) {
+        existing.propertyNames.push(propertyName);
+      }
+      const currStart = (row.start_date ?? "").trim();
+      const prevStart = (existing.contractStart ?? "").trim();
+      if (currStart && (!prevStart || currStart < prevStart)) {
+        existing.contractStart = currStart;
+      }
+    }
+    return [...byPm.values()].sort((a, b) =>
+      a.companyName.localeCompare(b.companyName)
+    );
+  }, [pmRows]);
 
   const revparChartData = useMemo(() => {
     const buckets = getLast12MonthBuckets();
@@ -963,44 +835,6 @@ export default function DashboardPage() {
         </p>
       </div>
 
-      <section className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-          Quick actions
-        </h2>
-        <div className="mt-4 flex flex-wrap gap-3">
-          <Link
-            href="/dashboard/upload"
-            className="inline-flex items-center justify-center rounded-lg bg-zinc-900 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
-          >
-            Upload bookings
-          </Link>
-          <Link
-            href="/dashboard/tickets/new"
-            className="inline-flex items-center justify-center rounded-lg border border-zinc-200 px-4 py-2.5 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
-          >
-            File a ticket
-          </Link>
-          <Link
-            href="/dashboard/reviews/new"
-            className="inline-flex items-center justify-center rounded-lg border border-zinc-200 px-4 py-2.5 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
-          >
-            Write a review
-          </Link>
-          <Link
-            href="/dashboard/properties"
-            className="inline-flex items-center justify-center rounded-lg border border-zinc-200 px-4 py-2.5 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
-          >
-            Manage properties
-          </Link>
-          <Link
-            href="/dashboard/statements/new"
-            className="inline-flex items-center justify-center rounded-lg border border-zinc-200 px-4 py-2.5 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
-          >
-            Upload statement
-          </Link>
-        </div>
-      </section>
-
       {surveyPendingCount != null &&
       ticketsAwaitingCount != null &&
       pmRequestsCount != null ? (
@@ -1026,163 +860,101 @@ export default function DashboardPage() {
         </div>
       ) : null}
 
-      <section className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-          Property
-        </h2>
-        {propertiesLoading ? (
-          <p className="mt-3 text-sm text-zinc-500">Loading properties…</p>
-        ) : properties.length === 0 ? (
-          <p className="mt-3 text-sm text-zinc-600 dark:text-zinc-400">
-            No properties yet. Complete onboarding to add one.
-          </p>
-        ) : properties.length === 1 && propertyGroups.length === 0 ? (
-          <p className="mt-3 text-sm font-medium text-zinc-900 dark:text-zinc-50">
-            {propertyLabel(properties[0])}
-          </p>
+      <div className="grid grid-cols-2 gap-4">
+      <section className="h-full rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+            MY PROPERTY MANAGERS
+          </h2>
+          <Link
+            href="/dashboard/properties"
+            className="text-xs font-medium text-zinc-500 hover:underline dark:text-zinc-400"
+          >
+            Manage →
+          </Link>
+        </div>
+        {pmLoading ? (
+          <p className="text-sm text-zinc-500">Loading…</p>
+        ) : groupedPmRows.length === 0 ? (
+          <p className="text-sm text-zinc-600 dark:text-zinc-400">No PM associated</p>
         ) : (
-          <div className="mt-3">
-            <label
-              htmlFor="property-select"
-              className="sr-only"
-            >
-              Select property
-            </label>
-            <select
-              id="property-select"
-              value={selectedScope}
-              onChange={(e) => setSelectedScope(e.target.value)}
-              className="block w-full max-w-md rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-900 focus:outline-none focus:ring-2 focus:ring-zinc-900/20 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50 dark:focus:border-zinc-400 dark:focus:ring-zinc-400/20"
-            >
-              <option value="all">All properties</option>
-              {propertyGroups.length > 0 ? (
-                <optgroup label="Groups">
-                  {propertyGroups.map((g) => (
-                    <option key={g.id} value={`group:${g.id}`}>
-                      {g.group_name?.trim() || "Unnamed group"}
-                    </option>
-                  ))}
-                </optgroup>
-              ) : null}
-              <optgroup label="Properties">
-                {properties.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {propertyLabel(p)}
-                  </option>
-                ))}
-              </optgroup>
-            </select>
-          </div>
+          <ul className="space-y-2">
+            {groupedPmRows.map((row) => (
+              <li
+                key={row.pmId}
+                className="rounded-lg border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-700"
+              >
+                <div>
+                  <p className="font-medium text-zinc-900 dark:text-zinc-50">
+                    {row.companyName}
+                  </p>
+                  <p className="text-zinc-600 dark:text-zinc-400">
+                    Properties: {row.propertyNames.join(", ")}
+                  </p>
+                  <p className="text-zinc-600 dark:text-zinc-400">
+                    Contract start: {formatDate(row.contractStart)}
+                  </p>
+                  <p className="mt-1">
+                    <Link
+                      href="/dashboard/tickets"
+                      className="text-xs font-medium text-zinc-500 hover:underline dark:text-zinc-400"
+                    >
+                      View tickets →
+                    </Link>
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ul>
         )}
       </section>
 
-      <section className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-          Current property manager
-        </h2>
-        {selectedPropertyIds.length === 0 ? (
-          <p className="mt-3 text-sm text-zinc-500">Select a property.</p>
-        ) : selectedPropertyIds.length > 1 ? (
-          <p className="mt-3 text-sm text-zinc-600 dark:text-zinc-400">
-            Select a single property to view PM contract details.
-          </p>
-        ) : pmLoading ? (
-          <p className="mt-3 text-sm text-zinc-500">Loading…</p>
-        ) : !pmRow ? (
-          <p className="mt-3 text-sm text-zinc-600 dark:text-zinc-400">
-            No PM associated
-          </p>
-        ) : (
-          <div className="mt-3">
-            <button
-              type="button"
-              onClick={() => setPmContractExpanded((v) => !v)}
-              aria-expanded={pmContractExpanded}
-              className="flex w-full items-center gap-2 rounded-lg text-left transition-colors hover:bg-zinc-50 dark:hover:bg-zinc-900/50"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
-                  <span className="font-semibold text-zinc-900 dark:text-zinc-50">
-                    {pmProfileCompanyName(pmRow.pm_profiles) ?? "—"}
-                  </span>
-                  <span className="text-sm text-zinc-600 dark:text-zinc-400">
-                    Contract start{" "}
-                    <span className="font-medium text-zinc-800 dark:text-zinc-200">
-                      {formatDate(pmRow.start_date)}
-                    </span>
-                  </span>
-                </div>
-              </div>
-              <svg
-                className={`size-5 shrink-0 text-zinc-500 transition-transform dark:text-zinc-400 ${
-                  pmContractExpanded ? "rotate-180" : ""
-                }`}
-                viewBox="0 0 20 20"
-                fill="currentColor"
-                aria-hidden
-              >
-                <path
-                  fillRule="evenodd"
-                  d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
-                  clipRule="evenodd"
-                />
-              </svg>
-            </button>
-            {pmContractExpanded ? (
-              <dl className="mt-3 grid gap-3 border-t border-zinc-200 pt-3 text-sm sm:grid-cols-2 dark:border-zinc-700">
-                <div>
-                  <dt className="text-zinc-500 dark:text-zinc-400">
-                    Notice period (days)
-                  </dt>
-                  <dd className="font-medium text-zinc-900 dark:text-zinc-50">
-                    {pmRow.contract_notice_days ?? "—"}
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-zinc-500 dark:text-zinc-400">
-                    Early termination fee
-                  </dt>
-                  <dd className="font-medium text-zinc-900 dark:text-zinc-50">
-                    {pmRow.contract_etf_exists === true
-                      ? "Yes"
-                      : pmRow.contract_etf_exists === false
-                        ? "No"
-                        : "—"}
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-zinc-500 dark:text-zinc-400">
-                    Maintenance approval threshold
-                  </dt>
-                  <dd className="font-medium text-zinc-900 dark:text-zinc-50">
-                    {formatMaintenanceThreshold(
-                      pmRow.contract_maintenance_threshold
-                    )}
-                  </dd>
-                </div>
-                <div className="sm:col-span-2">
-                  <dt className="text-zinc-500 dark:text-zinc-400">
-                    Listing transfer on exit
-                  </dt>
-                  <dd className="font-medium text-zinc-900 dark:text-zinc-50">
-                    {pmRow.contract_listing_transfer === true
-                      ? "Yes"
-                      : pmRow.contract_listing_transfer === false
-                        ? "No"
-                        : "—"}
-                  </dd>
-                </div>
-              </dl>
-            ) : null}
-          </div>
-        )}
+      <section className="h-full rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+            MY TICKETS
+          </h2>
+          <Link
+            href="/dashboard/tickets"
+            className="text-xs font-medium text-zinc-500 hover:underline dark:text-zinc-400"
+          >
+            View all →
+          </Link>
+        </div>
+        <div className="space-y-2 text-sm">
+          <Link href="/dashboard/tickets" className="block hover:underline">
+            <span className="font-semibold text-zinc-900 dark:text-zinc-50">
+              {ticketsAwaitingCount ?? 0}
+            </span>{" "}
+            <span className="text-zinc-600 dark:text-zinc-400">awaiting PM response</span>
+          </Link>
+          <Link href="/dashboard/tickets" className="block hover:underline">
+            <span className="font-semibold text-zinc-900 dark:text-zinc-50">
+              {pmRequestsCount ?? 0}
+            </span>{" "}
+            <span className="text-zinc-600 dark:text-zinc-400">requiring your action</span>
+          </Link>
+          <Link href="/dashboard/tickets" className="block hover:underline">
+            <span className="font-semibold text-zinc-900 dark:text-zinc-50">
+              {resolvedThisMonthCount ?? 0}
+            </span>{" "}
+            <span className="text-zinc-600 dark:text-zinc-400">resolved this month</span>
+          </Link>
+        </div>
       </section>
+      </div>
 
       <section className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-            Booking summary
+            Performance Summary
           </h2>
+          <Link
+            href="/dashboard/analytics"
+            className="text-xs font-medium text-zinc-500 hover:underline dark:text-zinc-400"
+          >
+            Analytics →
+          </Link>
           <div className="inline-flex rounded-lg border border-zinc-200 p-0.5 dark:border-zinc-700">
             <button
               type="button"
@@ -1209,12 +981,40 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {selectedPropertyIds.length === 0 ? (
-          <p className="mt-3 text-sm text-zinc-500">Select a property.</p>
+        {properties.length === 0 ? (
+          <p className="mt-3 text-sm text-zinc-500">Loading properties…</p>
         ) : bookingsLoading ? (
           <p className="mt-3 text-sm text-zinc-500">Loading bookings…</p>
         ) : (
-          <dl className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <>
+          <dl className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+            <div className="rounded-lg bg-zinc-50 p-3 dark:bg-zinc-900/50">
+              <dt className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                RevPAR (trailing 12m)
+              </dt>
+              <dd className="mt-1 text-2xl font-semibold tabular-nums text-zinc-900 dark:text-zinc-50">
+                {performanceRevpar.currentRevpar != null
+                  ? formatMoney(performanceRevpar.currentRevpar)
+                  : "—"}
+              </dd>
+              {performanceRevpar.pct != null ? (
+                <p className="mt-0.5 text-xs">
+                  {performanceRevpar.estimated ? (
+                    <span className="text-zinc-500">~ </span>
+                  ) : null}
+                  <span
+                    className={
+                      performanceRevpar.pct >= 0
+                        ? "text-emerald-700 dark:text-emerald-300"
+                        : "text-red-700 dark:text-red-300"
+                    }
+                  >
+                    {performanceRevpar.pct >= 0 ? "↑" : "↓"}{" "}
+                    {Math.abs(performanceRevpar.pct).toFixed(1)}%
+                  </span>
+                </p>
+              ) : null}
+            </div>
             <div className="rounded-lg bg-zinc-50 p-3 dark:bg-zinc-900/50">
               <dt className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
                 Guest bookings
@@ -1260,6 +1060,12 @@ export default function DashboardPage() {
               </p>
             </div>
           </dl>
+          {performanceRevpar.estimated ? (
+            <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+              ~ Estimated from partial prior year data
+            </p>
+          ) : null}
+          </>
         )}
       </section>
 
@@ -1271,8 +1077,8 @@ export default function DashboardPage() {
           Last 12 months — guest OTA / PM-direct revenue vs. nights available
           (calendar days minus owner stay and owner guest nights).
         </p>
-        {selectedPropertyIds.length === 0 ? (
-          <p className="mt-3 text-sm text-zinc-500">Select a property.</p>
+        {properties.length === 0 ? (
+          <p className="mt-3 text-sm text-zinc-500">Loading properties…</p>
         ) : bookingsLoading ? (
           <p className="mt-3 text-sm text-zinc-500">Loading bookings…</p>
         ) : (
@@ -1365,6 +1171,47 @@ export default function DashboardPage() {
               </p>
             ) : null}
           </>
+        )}
+      </section>
+
+      <section className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+            DATA GAPS
+          </h2>
+          <Link
+            href="/dashboard/upload"
+            className="text-xs font-medium text-zinc-500 hover:underline dark:text-zinc-400"
+          >
+            Go to Data Load →
+          </Link>
+        </div>
+        {dataGapsLoading ? (
+          <p className="text-sm text-zinc-500">Checking upload recency…</p>
+        ) : dataGapRows.length === 0 ? (
+          <p className="text-sm text-emerald-700 dark:text-emerald-300">All properties up to date ✓</p>
+        ) : (
+          <ul className="space-y-2">
+            {dataGapRows.map((p) => (
+              <li
+                key={p.id}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-700"
+              >
+                <div>
+                  <p className="font-medium text-zinc-900 dark:text-zinc-50">
+                    {propertyLabel(p)}
+                  </p>
+                  <p className="text-zinc-600 dark:text-zinc-400">No upload in 30 days</p>
+                </div>
+                <Link
+                  href="/dashboard/upload"
+                  className="text-xs font-medium text-zinc-500 hover:underline dark:text-zinc-400"
+                >
+                  Upload now →
+                </Link>
+              </li>
+            ))}
+          </ul>
         )}
       </section>
     </div>

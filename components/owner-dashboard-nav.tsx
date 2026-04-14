@@ -21,7 +21,7 @@ const NAV_ITEMS: NavItem[] = [
   },
   {
     href: "/dashboard/upload",
-    label: "Bookings",
+    label: "Data Load",
     active: (p) => p.startsWith("/dashboard/upload"),
   },
   {
