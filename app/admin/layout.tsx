@@ -33,11 +33,26 @@ export default async function AdminLayout({
             VeroSTR Admin
           </span>
           
-          <a href="/dashboard"
-            className="text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
-          >
-            Back to dashboard
-          </a> 
+          <nav className="flex flex-wrap items-center gap-4 text-xs">
+            <a
+              href="/admin"
+              className="text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
+            >
+              Reviews
+            </a>
+            <a
+              href="/admin/pricing"
+              className="text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
+            >
+              Pricing
+            </a>
+            <a
+              href="/dashboard"
+              className="text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
+            >
+              Back to dashboard
+            </a>
+          </nav>
         </div>
       </header>
       <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-8">
