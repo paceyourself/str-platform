@@ -1,0 +1,2 @@
+-- Optional seed data for local `supabase db reset`.
+-- Add INSERT statements here when needed.

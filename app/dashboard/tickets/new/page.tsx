@@ -255,11 +255,16 @@ export default function NewOwnerTicketPage() {
       payload.related_booking_id = relatedBookingId.trim();
     }
 
-    const { error: insErr } = await supabase.from("tickets").insert(payload);
-
+    const res = await fetch("/api/tickets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    
     setSubmitting(false);
-    if (insErr) {
-      setError(insErr.message);
+    if (!res.ok) {
+      const { error } = await res.json();
+      setError(error ?? "Something went wrong. Please try again.");
       return;
     }
 
