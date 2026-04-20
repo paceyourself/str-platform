@@ -282,7 +282,7 @@ export default function DashboardPage() {
 
   const [pmRows, setPmRows] = useState<OwnerPmSummaryRow[]>([]);
   const [pmLoading, setPmLoading] = useState(false);
-
+  const [pmManagerExpanded, setPmManagerExpanded] = useState(false);
   const [bookings, setBookings] = useState<BookingRow[]>([]);
   const [bookingsLoading, setBookingsLoading] = useState(false);
 
@@ -863,9 +863,13 @@ export default function DashboardPage() {
       <div className="grid grid-cols-2 gap-4">
       <section className="h-full rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
         <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-            MY PROPERTY MANAGERS
-          </h2>
+        <button
+ type="button"
+  onClick={() => setPmManagerExpanded((e) => !e)}
+  className="text-sm font-semibold uppercase tracking-wide text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+>
+  MY PROPERTY MANAGERS {pmManagerExpanded ? "▲" : "▼"}
+       </button>
           <Link
             href="/dashboard/properties"
             className="text-xs font-medium text-zinc-500 hover:underline dark:text-zinc-400"
@@ -873,11 +877,11 @@ export default function DashboardPage() {
             Manage →
           </Link>
         </div>
-        {pmLoading ? (
-          <p className="text-sm text-zinc-500">Loading…</p>
-        ) : groupedPmRows.length === 0 ? (
-          <p className="text-sm text-zinc-600 dark:text-zinc-400">No PM associated</p>
-        ) : (
+        {pmManagerExpanded && (pmLoading ? (
+  <p className="text-sm text-zinc-500">Loading…</p>
+) : groupedPmRows.length === 0 ? (
+  <p className="text-sm text-zinc-600 dark:text-zinc-400">No PM associated</p>
+) : (
           <ul className="space-y-2">
             {groupedPmRows.map((row) => (
               <li
@@ -905,8 +909,8 @@ export default function DashboardPage() {
                 </div>
               </li>
             ))}
-          </ul>
-        )}
+</ul>
+        ))}
       </section>
 
       <section className="h-full rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
