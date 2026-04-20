@@ -6,8 +6,6 @@ import {
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
-/** `/dashboard` and `/pm/dashboard` require auth; role-based redirects use server Supabase checks. */
-
 function normalizePathname(pathname: string) {
   if (pathname.length > 1 && pathname.endsWith("/")) {
     return pathname.slice(0, -1);
@@ -20,9 +18,9 @@ function isDashboardPath(pathname: string) {
   return p === "/dashboard" || pathname.startsWith("/dashboard/");
 }
 
-function isPmDashboardPath(pathname: string) {
+function isPmPath(pathname: string) {
   const p = normalizePathname(pathname);
-  return p === "/pm/dashboard" || pathname.startsWith("/pm/dashboard/");
+  return p === "/pm" || pathname.startsWith("/pm/");
 }
 
 function isLoginPath(pathname: string) {
@@ -40,11 +38,6 @@ function redirectTo(request: NextRequest, pathname: PostAuthDestination) {
   return NextResponse.redirect(url);
 }
 
-/**
- * Next.js 16+ root `proxy.ts` convention: default export handles the request
- * (replaces deprecated root `middleware.ts`). See:
- * https://nextjs.org/docs/messages/middleware-to-proxy
- */
 export default async function proxy(request: NextRequest) {
   let supabaseResponse = NextResponse.next({
     request: {
@@ -83,19 +76,21 @@ export default async function proxy(request: NextRequest) {
 
   const pathname = request.nextUrl.pathname;
 
-  if ((isDashboardPath(pathname) || isPmDashboardPath(pathname)) && !user) {
+  // Unauthenticated — redirect to login
+  if ((isDashboardPath(pathname) || isPmPath(pathname)) && !user) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     url.search = "";
     return NextResponse.redirect(url);
   }
 
+  // Authenticated — role-based routing
   if (user) {
     const needsRoleRouting =
       isLoginPath(pathname) ||
       isSignupPath(pathname) ||
       isDashboardPath(pathname) ||
-      isPmDashboardPath(pathname);
+      isPmPath(pathname);
 
     if (needsRoleRouting) {
       const state = await loadAuthRoutingState(supabase, user.id);
@@ -109,22 +104,14 @@ export default async function proxy(request: NextRequest) {
       }
 
       if (isDashboardPath(pathname)) {
-        if (state.hasOwnerProfile) {
-          return supabaseResponse;
-        }
-        if (state.hasPmClaim) {
-          return redirectTo(request, "/pm/dashboard");
-        }
+        if (state.hasOwnerProfile) return supabaseResponse;
+        if (state.hasPmClaim) return redirectTo(request, "/pm/dashboard");
         return redirectTo(request, "/signup");
       }
 
-      if (isPmDashboardPath(pathname)) {
-        if (state.hasPmClaim) {
-          return supabaseResponse;
-        }
-        if (state.hasOwnerProfile) {
-          return redirectTo(request, "/dashboard");
-        }
+      if (isPmPath(pathname)) {
+        if (state.hasPmClaim) return supabaseResponse;
+        if (state.hasOwnerProfile) return redirectTo(request, "/dashboard");
         return redirectTo(request, "/signup");
       }
     }
@@ -135,9 +122,6 @@ export default async function proxy(request: NextRequest) {
 
 export const config = {
   matcher: [
-    /*
-     * Run on all paths except static assets and image optimization.
-     */
     "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };
