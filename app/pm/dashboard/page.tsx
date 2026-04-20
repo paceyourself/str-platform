@@ -493,7 +493,7 @@ export default function PmDashboardPage() {
                   ? "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
                   : "bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-200"
               }`}>
-                {r.status === "acknowledged" ? "Approved" : r.status === "resolved" ? "Declined" : "Pending"}
+                 {r.status === "resolved" ? "Acknowledged" : r.status === "acknowledged" ? "Owner viewed" : "Owner not viewed"}
               </span>
             </div>
           </li>

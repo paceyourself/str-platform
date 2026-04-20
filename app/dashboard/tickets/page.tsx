@@ -177,7 +177,7 @@ function OpenTicketRow({
             }}
             className="shrink-0 self-start rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-800 hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
           >
-            {expanded ? "Cancel" : "Respond"}
+            {expanded ? "Cancel" : "Acknowledge"}
           </button>
         ) : null}
       </div>
@@ -202,7 +202,7 @@ function OpenTicketRow({
             disabled={respondSubmitting}
             className="mt-2 rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
           >
-            {respondSubmitting ? "Sending…" : "Submit"}
+            {respondSubmitting ? "Sending…" : "Acknowledge"}
           </button>
         </div>
       ) : null}
