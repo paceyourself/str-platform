@@ -338,7 +338,7 @@ export default function PmDashboardPage() {
           Ticket inbox
         </h2>
         <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-          Tickets filed by owners (owner → PM).
+          Owner → PM
         </p>
         {inboxError ? (
           <p className="mt-2 text-sm text-red-600 dark:text-red-400">
@@ -434,17 +434,16 @@ export default function PmDashboardPage() {
                 </div>
               );
             })}
-          </div>
+</div>
         )}
-      </section>
 
-      <section className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
-  <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-    Requests sent to owners
-  </h2>
-  <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-    Maintenance, vendor, and guest decision requests you have submitted.
-  </p>
+        <div className="mt-6 border-t border-zinc-200 pt-6 dark:border-zinc-800">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+            PM → Owner
+          </h3>
+          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+            Maintenance, vendor, and guest decision requests you have submitted.
+          </p>
   {sentError ? (
     <p className="mt-2 text-sm text-red-600 dark:text-red-400">{sentError}</p>
   ) : null}
@@ -499,8 +498,9 @@ export default function PmDashboardPage() {
           </li>
         );
       })}
-    </ul>
+</ul>
   )}
+  </div>
 </section>
 
       <div className="grid gap-4 sm:grid-cols-2">
