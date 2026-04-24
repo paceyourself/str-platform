@@ -25,6 +25,8 @@ type ExistingRel = {
   contract_payment_timeline_days: number | null;
   contract_exclusivity: boolean | null;
   contract_maintenance_threshold: number | string | null;
+  pm_fee_pct: number | null;
+  pm_monthly_fixed_fee: number | null;
 };
 
 function ymdFromDateValue(raw: string | null | undefined): string {
@@ -53,14 +55,13 @@ export default function PropertyPmPage() {
 
   const [contractStartDate, setContractStartDate] = useState("");
   const [noticePeriodDays, setNoticePeriodDays] = useState("");
-  const [earlyTerminationFeeExists, setEarlyTerminationFeeExists] =
-    useState(false);
+  const [earlyTerminationFeeExists, setEarlyTerminationFeeExists] = useState(false);
   const [listingTransfersOnExit, setListingTransfersOnExit] = useState(false);
   const [paymentTimelineDays, setPaymentTimelineDays] = useState("");
   const [exclusivityClause, setExclusivityClause] = useState(false);
-  const [contractMaintenanceThreshold, setContractMaintenanceThreshold] =
-    useState("");
-
+  const [contractMaintenanceThreshold, setContractMaintenanceThreshold] = useState("");
+  const [pmFeePct, setPmFeePct] = useState("");
+  const [pmMonthlyFixedFee, setPmMonthlyFixedFee] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -118,29 +119,19 @@ export default function PropertyPmPage() {
         return;
       }
 
-      const label =
-        prop.property_name?.trim() ||
-        prop.address_line1?.trim() ||
-        "Property";
+      const label = prop.property_name?.trim() || prop.address_line1?.trim() || "Property";
       setPropertyLabel(label);
 
       await loadPmProfiles();
 
       const { data: rel, error: rErr } = await supabase
         .from("owner_pm_relationships")
-        .select(
-          `
-          id,
-          pm_id,
-          start_date,
-          contract_notice_days,
-          contract_etf_exists,
-          contract_listing_transfer,
-          contract_payment_timeline_days,
-          contract_exclusivity,
-          contract_maintenance_threshold
-        `
-        )
+        .select(`
+          id, pm_id, start_date, contract_notice_days, contract_etf_exists,
+          contract_listing_transfer, contract_payment_timeline_days,
+          contract_exclusivity, contract_maintenance_threshold,
+          pm_fee_pct, pm_monthly_fixed_fee
+        `)
         .eq("property_id", propertyId)
         .eq("owner_id", user.id)
         .eq("active", true)
@@ -160,23 +151,15 @@ export default function PropertyPmPage() {
         const row = rel as ExistingRel;
         setExistingRel(row);
         setContractStartDate(ymdFromDateValue(row.start_date));
-        setNoticePeriodDays(
-          row.contract_notice_days != null
-            ? String(row.contract_notice_days)
-            : ""
-        );
+        setNoticePeriodDays(row.contract_notice_days != null ? String(row.contract_notice_days) : "");
         setEarlyTerminationFeeExists(row.contract_etf_exists === true);
         setListingTransfersOnExit(row.contract_listing_transfer === true);
-        setPaymentTimelineDays(
-          row.contract_payment_timeline_days != null
-            ? String(row.contract_payment_timeline_days)
-            : ""
-        );
+        setPaymentTimelineDays(row.contract_payment_timeline_days != null ? String(row.contract_payment_timeline_days) : "");
         setExclusivityClause(row.contract_exclusivity === true);
         const th = row.contract_maintenance_threshold;
-        setContractMaintenanceThreshold(
-          th != null && th !== "" ? String(th) : ""
-        );
+        setContractMaintenanceThreshold(th != null && th !== "" ? String(th) : "");
+        setPmFeePct(row.pm_fee_pct != null ? String(row.pm_fee_pct) : "");
+        setPmMonthlyFixedFee(row.pm_monthly_fixed_fee != null ? String(row.pm_monthly_fixed_fee) : "");
 
         const { data: pmRow } = await supabase
           .from("pm_profiles")
@@ -202,20 +185,18 @@ export default function PropertyPmPage() {
         setPaymentTimelineDays("");
         setExclusivityClause(false);
         setContractMaintenanceThreshold("");
+        setPmFeePct("");
+        setPmMonthlyFixedFee("");
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [propertyId, router, supabase, loadPmProfiles]);
 
   useEffect(() => {
     function handlePointerDown(e: MouseEvent) {
       if (!pmDropdownOpen) return;
       const el = pmPanelRef.current;
-      if (el && !el.contains(e.target as Node)) {
-        setPmDropdownOpen(false);
-      }
+      if (el && !el.contains(e.target as Node)) setPmDropdownOpen(false);
     }
     document.addEventListener("mousedown", handlePointerDown);
     return () => document.removeEventListener("mousedown", handlePointerDown);
@@ -248,9 +229,7 @@ export default function PropertyPmPage() {
     if (!propertyId) return;
 
     if (!noPmYet && !selectedPm) {
-      setError(
-        'Select a property manager from the list, or choose "I don\'t have a PM yet".'
-      );
+      setError('Select a property manager from the list, or choose "I don\'t have a PM yet".');
       return;
     }
 
@@ -262,9 +241,7 @@ export default function PropertyPmPage() {
       if (contractMaintenanceThreshold.trim()) {
         const t = Number(contractMaintenanceThreshold);
         if (!Number.isFinite(t) || t < 0) {
-          setError(
-            "Maintenance approval threshold must be a non-negative number."
-          );
+          setError("Maintenance approval threshold must be a non-negative number.");
           return;
         }
       }
@@ -287,7 +264,6 @@ export default function PropertyPmPage() {
         .eq("property_id", propertyId)
         .eq("owner_id", user.id)
         .eq("active", true);
-
       setSubmitting(false);
       if (deactErr) {
         setError(deactErr.message);
@@ -305,14 +281,10 @@ export default function PropertyPmPage() {
 
     const fields = {
       start_date: contractStartDate,
-      contract_notice_days: noticePeriodDays.trim()
-        ? Number(noticePeriodDays)
-        : null,
+      contract_notice_days: noticePeriodDays.trim() ? Number(noticePeriodDays) : null,
       contract_etf_exists: earlyTerminationFeeExists,
       contract_listing_transfer: listingTransfersOnExit,
-      contract_payment_timeline_days: paymentTimelineDays.trim()
-        ? Number(paymentTimelineDays)
-        : null,
+      contract_payment_timeline_days: paymentTimelineDays.trim() ? Number(paymentTimelineDays) : null,
       contract_exclusivity: exclusivityClause,
       contract_maintenance_threshold: (() => {
         const raw = contractMaintenanceThreshold.trim();
@@ -322,15 +294,16 @@ export default function PropertyPmPage() {
       })(),
     };
 
+    let relId: string | null = existingRel?.id ?? null;
+
     if (existingRel && existingRel.pm_id === selectedPm.id) {
       const { error: uErr } = await supabase
         .from("owner_pm_relationships")
         .update(fields)
         .eq("id", existingRel.id)
         .eq("owner_id", user.id);
-
-      setSubmitting(false);
       if (uErr) {
+
         setError(uErr.message);
         return;
       }
@@ -342,7 +315,7 @@ export default function PropertyPmPage() {
         .eq("owner_id", user.id)
         .eq("active", true);
 
-      const { error: insErr } = await supabase
+      const { data: newRel, error: insErr } = await supabase
         .from("owner_pm_relationships")
         .insert({
           owner_id: user.id,
@@ -350,23 +323,61 @@ export default function PropertyPmPage() {
           property_id: propertyId,
           active: true,
           ...fields,
-        });
+        })
+        .select("id")
+        .single();
 
-      setSubmitting(false);
       if (insErr) {
+        setSubmitting(false);
         setError(insErr.message);
         return;
       }
+      relId = newRel?.id ?? null;
     }
 
+// Write fee data to relationship row and history table
+if (relId && (pmFeePct.trim() || pmMonthlyFixedFee.trim())) {
+  const feeRow: Record<string, unknown> = {
+    owner_pm_relationship_id: relId,
+    effective_date: contractStartDate,
+  };
+  const relFeeUpdate: Record<string, unknown> = {};
+
+  if (pmFeePct.trim()) {
+    const n = Number(pmFeePct);
+    if (Number.isFinite(n)) {
+      feeRow.pm_fee_pct = n;
+      relFeeUpdate.pm_fee_pct = n;
+    }
+  }
+  if (pmMonthlyFixedFee.trim()) {
+    const n = Number(pmMonthlyFixedFee);
+    if (Number.isFinite(n)) {
+      feeRow.pm_monthly_fixed_fee = n;
+      relFeeUpdate.pm_monthly_fixed_fee = n;
+    }
+  }
+  const th = fields.contract_maintenance_threshold;
+  if (th != null) feeRow.approval_threshold = th;
+
+  await supabase.from("owner_pm_fee_history").insert(feeRow);
+
+  if (Object.keys(relFeeUpdate).length > 0) {
+    await supabase
+      .from("owner_pm_relationships")
+      .update(relFeeUpdate)
+      .eq("id", relId);
+  }
+}
+
+    setSubmitting(false);
+    setSubmitting(false);
     router.push("/dashboard/properties");
     router.refresh();
   }
 
   if (!propertyId) {
-    return (
-      <p className="text-sm text-red-600 dark:text-red-400">Invalid property.</p>
-    );
+    return <p className="text-sm text-red-600 dark:text-red-400">Invalid property.</p>;
   }
 
   if (loadingProp) {
@@ -377,13 +388,9 @@ export default function PropertyPmPage() {
     <div className="mx-auto max-w-2xl space-y-8">
       <div>
         <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
-          <Link href="/dashboard" className="hover:underline">
-            Dashboard
-          </Link>
+          <Link href="/dashboard" className="hover:underline">Dashboard</Link>
           <span className="mx-2">/</span>
-          <Link href="/dashboard/properties" className="hover:underline">
-            Properties
-          </Link>
+          <Link href="/dashboard/properties" className="hover:underline">Properties</Link>
           <span className="mx-2">/</span>
           PM
         </p>
@@ -392,24 +399,15 @@ export default function PropertyPmPage() {
         </h1>
         <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
           {propertyLabel ? (
-            <>
-              Link or update the property manager for{" "}
-              <span className="font-medium text-zinc-800 dark:text-zinc-200">
-                {propertyLabel}
-              </span>
-              .
+            <>Link or update the property manager for{" "}
+              <span className="font-medium text-zinc-800 dark:text-zinc-200">{propertyLabel}</span>.
             </>
-          ) : (
-            "Link or update the property manager for this property."
-          )}
+          ) : "Link or update the property manager for this property."}
         </p>
       </div>
 
       {error ? (
-        <div
-          role="alert"
-          className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-200"
-        >
+        <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-200">
           {error}
         </div>
       ) : null}
@@ -419,27 +417,20 @@ export default function PropertyPmPage() {
         onSubmit={handleSubmit}
       >
         <div className="relative" ref={pmPanelRef}>
-          <label
-            htmlFor="pm_search"
-            className="block text-sm font-medium text-zinc-700 dark:text-zinc-300"
-          >
+          <label htmlFor="pm_search" className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
             Property manager
           </label>
           <input
             id="pm_search"
             type="text"
             autoComplete="off"
-            placeholder={
-              noPmYet ? "No PM selected" : "Search PM companies…"
-            }
+            placeholder={noPmYet ? "No PM selected" : "Search PM companies…"}
             value={noPmYet ? "" : pmSearch}
             onChange={(e) => {
               setPmSearch(e.target.value);
               setPmDropdownOpen(true);
               if (noPmYet) setNoPmYet(false);
-              if (selectedPm && e.target.value !== selectedPm.company_name) {
-                setSelectedPm(null);
-              }
+              if (selectedPm && e.target.value !== selectedPm.company_name) setSelectedPm(null);
             }}
             onFocus={() => setPmDropdownOpen(true)}
             disabled={noPmYet}
@@ -448,13 +439,9 @@ export default function PropertyPmPage() {
           {pmDropdownOpen && !noPmYet ? (
             <div className="absolute z-20 mt-1 max-h-56 w-full overflow-auto rounded-lg border border-zinc-200 bg-white py-1 shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
               {pmLoading ? (
-                <p className="px-3 py-2 text-sm text-zinc-500">
-                  Loading companies…
-                </p>
+                <p className="px-3 py-2 text-sm text-zinc-500">Loading companies…</p>
               ) : filteredPms.length === 0 ? (
-                <p className="px-3 py-2 text-sm text-zinc-500">
-                  No matches. Try another search.
-                </p>
+                <p className="px-3 py-2 text-sm text-zinc-500">No matches. Try another search.</p>
               ) : (
                 filteredPms.map((pm) => (
                   <button
@@ -493,10 +480,7 @@ export default function PropertyPmPage() {
             </p>
 
             <div>
-              <label
-                htmlFor="contract_start"
-                className="block text-sm font-medium text-zinc-700 dark:text-zinc-300"
-              >
+              <label htmlFor="contract_start" className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
                 Contract start date <span className="text-red-600">*</span>
               </label>
               <input
@@ -510,10 +494,46 @@ export default function PropertyPmPage() {
             </div>
 
             <div>
-              <label
-                htmlFor="notice_days"
-                className="block text-sm font-medium text-zinc-700 dark:text-zinc-300"
-              >
+              <label htmlFor="pm_fee_pct" className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                PM fee (%)
+              </label>
+              <input
+                id="pm_fee_pct"
+                type="number"
+                min={0}
+                max={100}
+                step={0.1}
+                placeholder="e.g. 20"
+                value={pmFeePct}
+                onChange={(e) => setPmFeePct(e.target.value)}
+                className="mt-1.5 block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 shadow-sm outline-none focus:border-zinc-900 focus:ring-2 focus:ring-zinc-900/20 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50 dark:focus:border-zinc-400 dark:focus:ring-zinc-400/20"
+              />
+              <p className="mt-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+                Optional — percentage of gross revenue charged by PM
+              </p>
+            </div>
+
+            <div>
+              <label htmlFor="pm_monthly_fixed_fee" className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                Monthly fixed fee ($)
+              </label>
+              <input
+                id="pm_monthly_fixed_fee"
+                type="number"
+                min={0}
+                step={1}
+                placeholder="e.g. 150"
+                value={pmMonthlyFixedFee}
+                onChange={(e) => setPmMonthlyFixedFee(e.target.value)}
+                className="mt-1.5 block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 shadow-sm outline-none focus:border-zinc-900 focus:ring-2 focus:ring-zinc-900/20 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50 dark:focus:border-zinc-400 dark:focus:ring-zinc-400/20"
+              />
+              <p className="mt-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+                Optional — fixed monthly fee charged by PM
+              </p>
+            </div>
+
+            <div>
+              <label htmlFor="notice_days" className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
                 Notice period (days)
               </label>
               <input
@@ -530,35 +550,24 @@ export default function PropertyPmPage() {
               <input
                 type="checkbox"
                 checked={earlyTerminationFeeExists}
-                onChange={(e) =>
-                  setEarlyTerminationFeeExists(e.target.checked)
-                }
+                onChange={(e) => setEarlyTerminationFeeExists(e.target.checked)}
                 className="size-4 rounded border-zinc-300 text-zinc-900 focus:ring-zinc-900 dark:border-zinc-600 dark:bg-zinc-800"
               />
-              <span className="text-sm text-zinc-800 dark:text-zinc-200">
-                Early termination fee exists
-              </span>
+              <span className="text-sm text-zinc-800 dark:text-zinc-200">Early termination fee exists</span>
             </label>
 
             <label className="flex cursor-pointer items-center gap-3">
               <input
                 type="checkbox"
                 checked={listingTransfersOnExit}
-                onChange={(e) =>
-                  setListingTransfersOnExit(e.target.checked)
-                }
+                onChange={(e) => setListingTransfersOnExit(e.target.checked)}
                 className="size-4 rounded border-zinc-300 text-zinc-900 focus:ring-zinc-900 dark:border-zinc-600 dark:bg-zinc-800"
               />
-              <span className="text-sm text-zinc-800 dark:text-zinc-200">
-                Listing transfers on exit
-              </span>
+              <span className="text-sm text-zinc-800 dark:text-zinc-200">Listing transfers on exit</span>
             </label>
 
             <div>
-              <label
-                htmlFor="payment_timeline"
-                className="block text-sm font-medium text-zinc-700 dark:text-zinc-300"
-              >
+              <label htmlFor="payment_timeline" className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
                 Payment timeline (days)
               </label>
               <input
@@ -578,16 +587,11 @@ export default function PropertyPmPage() {
                 onChange={(e) => setExclusivityClause(e.target.checked)}
                 className="size-4 rounded border-zinc-300 text-zinc-900 focus:ring-zinc-900 dark:border-zinc-600 dark:bg-zinc-800"
               />
-              <span className="text-sm text-zinc-800 dark:text-zinc-200">
-                Exclusivity clause
-              </span>
+              <span className="text-sm text-zinc-800 dark:text-zinc-200">Exclusivity clause</span>
             </label>
 
             <div>
-              <label
-                htmlFor="contract_maintenance_threshold"
-                className="block text-sm font-medium text-zinc-700 dark:text-zinc-300"
-              >
+              <label htmlFor="contract_maintenance_threshold" className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
                 Maintenance approval threshold ($)
               </label>
               <input
@@ -598,14 +602,11 @@ export default function PropertyPmPage() {
                 inputMode="decimal"
                 placeholder="e.g. 250"
                 value={contractMaintenanceThreshold}
-                onChange={(e) =>
-                  setContractMaintenanceThreshold(e.target.value)
-                }
+                onChange={(e) => setContractMaintenanceThreshold(e.target.value)}
                 className="mt-1.5 block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 shadow-sm outline-none focus:border-zinc-900 focus:ring-2 focus:ring-zinc-900/20 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50 dark:focus:border-zinc-400 dark:focus:ring-zinc-400/20"
               />
               <p className="mt-1.5 text-xs text-zinc-500 dark:text-zinc-400">
-                Dollar amount above which PM must get your approval before
-                proceeding with maintenance work
+                Dollar amount above which PM must get your approval before proceeding with maintenance work
               </p>
             </div>
           </div>
