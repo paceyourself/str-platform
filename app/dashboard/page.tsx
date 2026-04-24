@@ -29,6 +29,8 @@ type OwnerPmSummaryRow = {
   property_id: string;
   pm_id: string;
   start_date: string | null;
+  pm_fee_pct: number | null;
+  pm_monthly_fixed_fee: number | null;
   pm_profiles: PmProfileNested | PmProfileNested[] | null;
   properties:
     | { property_name: string | null; address_line1: string | null; city: string | null }
@@ -47,10 +49,18 @@ function pmSummaryPropertyName(row: OwnerPmSummaryRow): string {
   return p?.property_name?.trim() || p?.address_line1?.trim() || "Property";
 }
 
+type PropertyFeeSummary = {
+  name: string;
+  pm_fee_pct: number | null;
+  pm_monthly_fixed_fee: number | null;
+  relId: string;
+};
+
 type GroupedPmSummary = {
   pmId: string;
   companyName: string;
-  propertyNames: string[];
+  profileClaimed: boolean;
+  properties: PropertyFeeSummary[];
   contractStart: string | null;
 };
 
@@ -504,20 +514,22 @@ export default function DashboardPage() {
 
     const [pmRes, bookRes] = await Promise.all([
       supabase
-        .from("owner_pm_relationships")
-        .select(
-          `
-          id,
-          property_id,
-          pm_id,
-          start_date,
-          pm_profiles ( company_name ),
-          properties ( property_name, address_line1, city )
+      .from("owner_pm_relationships")
+      .select(
         `
-        )
-        .eq("active", true)
-        .in("property_id", propertyIds)
-        .order("start_date", { ascending: false, nullsFirst: false }),
+        id,
+        property_id,
+        pm_id,
+        start_date,
+        pm_fee_pct,
+        pm_monthly_fixed_fee,
+        pm_profiles ( company_name, profile_claimed ),
+        properties ( property_name, address_line1, city )
+      `
+      )
+      .eq("active", true)
+      .in("property_id", propertyIds)
+      .order("start_date", { ascending: false, nullsFirst: false }),
       supabase
         .from("bookings")
         .select("block_type, net_owner_revenue, nights, check_in, check_out")
@@ -737,19 +749,32 @@ export default function DashboardPage() {
       if (!pmId) continue;
       const propertyName = pmSummaryPropertyName(row);
       const companyName = pmProfileCompanyName(row.pm_profiles) ?? "—";
+      const pm = row.pm_profiles;
+      const profileClaimed = pm == null
+        ? false
+        : Array.isArray(pm)
+          ? (pm[0] as { profile_claimed?: boolean })?.profile_claimed === true
+          : (pm as { profile_claimed?: boolean })?.profile_claimed === true;
+
+      const propEntry: PropertyFeeSummary = {
+        name: propertyName,
+        pm_fee_pct: row.pm_fee_pct ?? null,
+        pm_monthly_fixed_fee: row.pm_monthly_fixed_fee ?? null,
+        relId: row.id,
+      };
+
       const existing = byPm.get(pmId);
       if (!existing) {
         byPm.set(pmId, {
           pmId,
           companyName,
-          propertyNames: [propertyName],
+          profileClaimed,
+          properties: [propEntry],
           contractStart: row.start_date ?? null,
         });
         continue;
       }
-      if (!existing.propertyNames.includes(propertyName)) {
-        existing.propertyNames.push(propertyName);
-      }
+      existing.properties.push(propEntry);
       const currStart = (row.start_date ?? "").trim();
       const prevStart = (existing.contractStart ?? "").trim();
       if (currStart && (!prevStart || currStart < prevStart)) {
@@ -882,34 +907,53 @@ export default function DashboardPage() {
 ) : groupedPmRows.length === 0 ? (
   <p className="text-sm text-zinc-600 dark:text-zinc-400">No PM associated</p>
 ) : (
-          <ul className="space-y-2">
+<ul className="space-y-2">
             {groupedPmRows.map((row) => (
               <li
                 key={row.pmId}
                 className="rounded-lg border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-700"
               >
-                <div>
+                <div className="flex items-center justify-between">
                   <p className="font-medium text-zinc-900 dark:text-zinc-50">
                     {row.companyName}
                   </p>
-                  <p className="text-zinc-600 dark:text-zinc-400">
-                    Properties: {row.propertyNames.join(", ")}
-                  </p>
-                  <p className="text-zinc-600 dark:text-zinc-400">
-                    Contract start: {formatDate(row.contractStart)}
-                  </p>
-                  <p className="mt-1">
-                    <Link
-                      href="/dashboard/tickets"
-                      className="text-xs font-medium text-zinc-500 hover:underline dark:text-zinc-400"
-                    >
-                      View tickets →
-                    </Link>
-                  </p>
+                  {!row.profileClaimed && (
+                    <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+                      Unclaimed
+                    </span>
+                  )}
                 </div>
+                <ul className="mt-2 space-y-1">
+                  {row.properties.map((prop) => (
+                    <li key={prop.relId} className="flex items-center justify-between gap-2">
+                      <span className="text-zinc-700 dark:text-zinc-300">
+                        {prop.name}
+                      </span>
+                      {prop.pm_fee_pct != null || prop.pm_monthly_fixed_fee != null ? (
+                        <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                          {prop.pm_monthly_fixed_fee != null ? `$${Number(prop.pm_monthly_fixed_fee).toLocaleString()}/mo` : ""}
+                          {prop.pm_fee_pct != null && prop.pm_monthly_fixed_fee != null ? " · " : ""}
+                          {prop.pm_fee_pct != null ? `${prop.pm_fee_pct}%` : ""}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-amber-600 dark:text-amber-400">
+                          ⚠ Fees not entered
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-2">
+                  <Link
+                    href="/dashboard/tickets"
+                    className="text-xs font-medium text-zinc-500 hover:underline dark:text-zinc-400"
+                  >
+                    View tickets →
+                  </Link>
+                </p>
               </li>
             ))}
-</ul>
+          </ul>
         ))}
       </section>
 
