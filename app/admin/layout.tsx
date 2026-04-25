@@ -34,7 +34,7 @@ export default async function AdminLayout({
           </span>
           
           <nav className="flex flex-wrap items-center gap-4 text-xs">
-       <a href="/admin/admin-dashboard" className="text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100">
+          <a href="/admin/dashboard" className="text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100">
     Admin Dashboard
   </a>
   <a href="/admin/analytics" className="text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100">
