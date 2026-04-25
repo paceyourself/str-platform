@@ -372,13 +372,13 @@ export default function DashboardPage() {
               count: 0,
               error: null as { message: string } | null,
             })
-            supabase
+            :supabase
             .from("tickets")
             .select("*", { count: "exact", head: true })
             .eq("direction", "pm_to_owner")
             .eq("status", "open")
             .is("acknowledged_at", null)
-            .in("owner_pm_relationship_id", relIds)
+            .in("owner_pm_relationship_id", relIds),
         relIds.length === 0
           ? Promise.resolve({
               count: 0,
