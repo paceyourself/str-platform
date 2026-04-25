@@ -182,7 +182,13 @@ export default function PmNewRequestPage() {
       properties: r.property_id ? propMap.get(r.property_id) ?? null : null,
     }));
 
-    setRelationships(list);
+    setRelationships(
+      list.sort((a, b) => {
+        const aProp = a.properties?.property_name?.trim() ?? a.properties?.address_line1?.trim() ?? "";
+        const bProp = b.properties?.property_name?.trim() ?? b.properties?.address_line1?.trim() ?? "";
+        return aProp.localeCompare(bProp);
+      })
+    );
     if (list.length === 1) setRelId(list[0].id);
   }, [router, supabase]);
 
