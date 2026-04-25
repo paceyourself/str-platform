@@ -20,18 +20,15 @@ type PropertyEmbed = {
 type RelOption = {
   id: string;
   owner_id: string;
+  owner_name: string | null;
   contract_maintenance_threshold: number | string | null;
   /** Merged from a separate `properties` query (embeds are often null under PM RLS). */
   properties: PropertyEmbed | null;
 };
 
-function propertyLine(p: PropertyEmbed | null) {
-  if (!p) return "Property";
-  return (
-    p.property_name?.trim() ||
-    p.address_line1?.trim() ||
-    "Property"
-  );
+function propertyLine(p: PropertyEmbed | null, ownerName: string | null) {
+  const prop = p?.property_name?.trim() || p?.address_line1?.trim() || "Property";
+  return ownerName ? `${prop} — ${ownerName}` : prop;
 }
 
 /** Tickets.queue is NOT NULL; pm_to_owner uses request_type for the real category. */
@@ -164,12 +161,23 @@ export default function PmNewRequestPage() {
         });
       }
     }
-
+    const ownerIds = [...new Set(relRows.map((r) => r.owner_id))];
+    const ownerMap = new Map<string, string>();
+    if (ownerIds.length > 0) {
+      const { data: owners } = await supabase
+        .from("owner_profiles")
+        .select("id, display_name")
+        .in("id", ownerIds);
+      for (const o of owners ?? []) {
+        ownerMap.set(o.id as string, (o.display_name as string | null) ?? "");
+      }
+    }
     setLoadingPm(false);
 
     const list: RelOption[] = relRows.map((r) => ({
       id: r.id,
       owner_id: r.owner_id,
+      owner_name: ownerMap.get(r.owner_id) ?? null,  // ← add this
       contract_maintenance_threshold: r.contract_maintenance_threshold,
       properties: r.property_id ? propMap.get(r.property_id) ?? null : null,
     }));
@@ -301,7 +309,7 @@ export default function PmNewRequestPage() {
             <option value="">Select…</option>
             {relationships.map((r) => (
               <option key={r.id} value={r.id}>
-                {propertyLine(r.properties)}
+                {propertyLine(r.properties, r.owner_name)}
               </option>
             ))}
           </select>
