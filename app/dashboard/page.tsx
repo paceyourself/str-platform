@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import PmManagerCard from "@/components/PmManagerCard";
 import {
   CartesianGrid,
   Line,
@@ -907,53 +908,10 @@ export default function DashboardPage() {
 ) : groupedPmRows.length === 0 ? (
   <p className="text-sm text-zinc-600 dark:text-zinc-400">No PM associated</p>
 ) : (
-<ul className="space-y-2">
-            {groupedPmRows.map((row) => (
-              <li
-                key={row.pmId}
-                className="rounded-lg border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-700"
-              >
-                <div className="flex items-center justify-between">
-                  <p className="font-medium text-zinc-900 dark:text-zinc-50">
-                    {row.companyName}
-                  </p>
-                  {!row.profileClaimed && (
-                    <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
-                      Unclaimed
-                    </span>
-                  )}
-                </div>
-                <ul className="mt-2 space-y-1">
-                  {row.properties.map((prop) => (
-                    <li key={prop.relId} className="flex items-center justify-between gap-2">
-                      <span className="text-zinc-700 dark:text-zinc-300">
-                        {prop.name}
-                      </span>
-                      {prop.pm_fee_pct != null || prop.pm_monthly_fixed_fee != null ? (
-                        <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                          {prop.pm_monthly_fixed_fee != null ? `$${Number(prop.pm_monthly_fixed_fee).toLocaleString()}/mo` : ""}
-                          {prop.pm_fee_pct != null && prop.pm_monthly_fixed_fee != null ? " · " : ""}
-                          {prop.pm_fee_pct != null ? `${prop.pm_fee_pct}%` : ""}
-                        </span>
-                      ) : (
-                        <span className="text-xs text-amber-600 dark:text-amber-400">
-                          ⚠ Fees not entered
-                        </span>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-                <p className="mt-2">
-                  <Link
-                    href="/dashboard/tickets"
-                    className="text-xs font-medium text-zinc-500 hover:underline dark:text-zinc-400"
-                  >
-                    View tickets →
-                  </Link>
-                </p>
-              </li>
-            ))}
-          </ul>
+<PmManagerCard
+  rows={groupedPmRows}
+  onFeesUpdated={() => void loadPmAndBookings()}
+/>
         ))}
       </section>
 
