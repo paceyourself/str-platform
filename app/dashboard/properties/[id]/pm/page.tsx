@@ -358,7 +358,10 @@ if (relId && (pmFeePct.trim() || pmMonthlyFixedFee.trim())) {
     }
   }
   const th = fields.contract_maintenance_threshold;
-  if (th != null) feeRow.approval_threshold = th;
+  if (th != null) {
+    feeRow.approval_threshold = th;
+    relFeeUpdate.contract_maintenance_threshold = th;  // ← add this
+  }
 
   await supabase.from("owner_pm_fee_history").insert(feeRow);
 
