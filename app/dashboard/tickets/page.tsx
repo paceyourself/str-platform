@@ -114,7 +114,7 @@ function splitTickets(rows: TicketRow[]): {
   const openTickets: TicketRow[] = [];
   const resolvedTickets: TicketRow[] = [];
   for (const t of rows) {
-    if (t.status === "open") {
+    if (t.status === "open" || t.status === "acknowledged") {
       openTickets.push(t);
     } else if (t.status === "resolved" || t.status === "closed") {
       resolvedTickets.push(t);
