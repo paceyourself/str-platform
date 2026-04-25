@@ -35,9 +35,15 @@ type TicketRow = {
   created_at: string;
   resolved_at: string | null;
   owner_pm_relationship_id: string | null;
+  dollar_amount: number | null;
+  owner_decision: string | null;
   pm_profiles:
     | { company_name: string | null }
     | { company_name: string | null }[]
+    | null;
+  owner_pm_relationships:
+    | { contract_maintenance_threshold: number | null }
+    | { contract_maintenance_threshold: number | null }[]
     | null;
 };
 
@@ -46,6 +52,19 @@ function ticketPmName(t: TicketRow): string | null {
   if (pm == null) return null;
   const p = Array.isArray(pm) ? pm[0] : pm;
   return p?.company_name ?? null;
+}
+
+function requiresApproval(t: TicketRow): boolean {
+  if (t.direction !== "pm_to_owner") return false;
+  if (t.dollar_amount == null) return false;
+  const rel = t.owner_pm_relationships;
+  const threshold = rel == null
+    ? null
+    : Array.isArray(rel)
+      ? (rel[0]?.contract_maintenance_threshold ?? null)
+      : rel.contract_maintenance_threshold;
+  if (threshold == null) return false;
+  return Number(t.dollar_amount) >= Number(threshold);
 }
 
 function categoryLabel(t: TicketRow): string {
@@ -130,6 +149,7 @@ function OpenTicketRow({
   respondError,
   respondSubmitting,
   onRespondSubmit,
+  needsApproval,
 }: {
   t: TicketRow;
   expanded: boolean;
@@ -138,7 +158,8 @@ function OpenTicketRow({
   onRespondDraftChange: (value: string) => void;
   respondError: string | null;
   respondSubmitting: boolean;
-  onRespondSubmit: () => void;
+  onRespondSubmit: (action: "acknowledge" | "approve" | "decline") => void;
+  needsApproval: boolean;
 }) {
   const showRespond = t.direction === "pm_to_owner" && t.status === "open";
   return (
@@ -196,14 +217,37 @@ function OpenTicketRow({
             placeholder="Your response…"
             disabled={respondSubmitting}
           />
-          <button
-            type="button"
-            onClick={() => void onRespondSubmit()}
-            disabled={respondSubmitting}
-            className="mt-2 rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
-          >
-            {respondSubmitting ? "Sending…" : "Acknowledge"}
-          </button>
+<div className="mt-2 flex gap-2">
+            {needsApproval ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => void onRespondSubmit("approve")}
+                  disabled={respondSubmitting}
+                  className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 hover:bg-emerald-700"
+                >
+                  {respondSubmitting ? "Saving…" : "Approve"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void onRespondSubmit("decline")}
+                  disabled={respondSubmitting}
+                  className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 hover:bg-red-700"
+                >
+                  {respondSubmitting ? "Saving…" : "Decline"}
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void onRespondSubmit("acknowledge")}
+                disabled={respondSubmitting}
+                className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
+              >
+                {respondSubmitting ? "Sending…" : "Acknowledge"}
+              </button>
+            )}
+          </div>
         </div>
       ) : null}
     </li>
@@ -317,7 +361,10 @@ export default function OwnerTicketsPage() {
         created_at,
         resolved_at,
         owner_pm_relationship_id,
-        pm_profiles ( company_name )
+        dollar_amount,
+        owner_decision,
+        pm_profiles ( company_name ),
+        owner_pm_relationships ( contract_maintenance_threshold )
       `
       )
       .in("owner_pm_relationship_id", relIds)
@@ -343,7 +390,7 @@ export default function OwnerTicketsPage() {
   }, [load]);
 
   const handleRespondSubmit = useCallback(
-    async (ticketId: string) => {
+    async (ticketId: string, action: "acknowledge" | "approve" | "decline") => {
       const text = (respondDraft[ticketId] ?? "").trim();
       if (!text) {
         setRespondError("Enter a response.");
@@ -361,13 +408,17 @@ export default function OwnerTicketsPage() {
       }
 
       const resolvedAt = new Date().toISOString();
+      const updatePayload: Record<string, unknown> = {
+        resolution_note: text,
+        resolved_at: resolvedAt,
+        status: "resolved",
+      };
+      if (action === "approve") updatePayload.owner_decision = "approved";
+      if (action === "decline") updatePayload.owner_decision = "declined";
+
       const { error: upErr } = await supabase
         .from("tickets")
-        .update({
-          resolution_note: text,
-          resolved_at: resolvedAt,
-          status: "resolved",
-        })
+        .update(updatePayload)
         .eq("id", ticketId)
         .eq("owner_id", user.id)
         .eq("status", "open");
@@ -481,7 +532,8 @@ export default function OwnerTicketsPage() {
                       expandedRespondId === t.id ? respondError : null
                     }
                     respondSubmitting={respondSubmitId === t.id}
-                    onRespondSubmit={() => handleRespondSubmit(t.id)}
+                    onRespondSubmit={(action) => handleRespondSubmit(t.id, action)}
+                    needsApproval={requiresApproval(t)}
                   />
                 ))}
               </ul>

@@ -17,7 +17,10 @@ type TicketRow = {
   acknowledged_at: string | null;
   resolved_at: string | null;
   resolution_note: string | null;
+  dollar_amount: number | null;
+  owner_decision: string | null;
   pm_profiles: PmEmbed | PmEmbed[] | null;
+  owner_pm_relationships: { contract_maintenance_threshold: number | null } | { contract_maintenance_threshold: number | null }[] | null;
 };
 
 function pmCompanyName(nested: TicketRow["pm_profiles"]): string {
@@ -75,7 +78,7 @@ export default function OwnerTicketDetailPage() {
     const { data, error: qErr } = await supabase
       .from("tickets")
       .select(
-        `
+`
         id,
         title,
         description,
@@ -85,7 +88,10 @@ export default function OwnerTicketDetailPage() {
         acknowledged_at,
         resolved_at,
         resolution_note,
-        pm_profiles ( company_name )
+        dollar_amount,
+        owner_decision,
+        pm_profiles ( company_name ),
+        owner_pm_relationships ( contract_maintenance_threshold )
       `
       )
       .eq("id", id)
@@ -154,6 +160,21 @@ export default function OwnerTicketDetailPage() {
   const showRespondForm =
     ticket?.direction === "pm_to_owner" && ticket.status === "open";
 
+    const [submitAction, setSubmitAction] = useState<"acknowledge" | "approve" | "decline">("acknowledge");
+
+    function needsApproval(): boolean {
+      if (!ticket || ticket.direction !== "pm_to_owner") return false;
+      if (ticket.dollar_amount == null) return false;
+      const rel = ticket.owner_pm_relationships;
+      const threshold = rel == null
+        ? null
+        : Array.isArray(rel)
+          ? (rel[0]?.contract_maintenance_threshold ?? null)
+          : rel.contract_maintenance_threshold;
+      if (threshold == null) return false;
+      return Number(ticket.dollar_amount) >= Number(threshold);
+    }
+
   async function handleRespond(e: React.FormEvent) {
     e.preventDefault();
     if (!ticket) return;
@@ -172,13 +193,17 @@ export default function OwnerTicketDetailPage() {
       router.replace("/login");
       return;
     }
+    const updatePayload: Record<string, unknown> = {
+      resolution_note: trimmed,
+      resolved_at: new Date().toISOString(),
+      status: "resolved",
+    };
+    if (submitAction === "approve") updatePayload.owner_decision = "approved";
+    if (submitAction === "decline") updatePayload.owner_decision = "declined";
+
     const { error: upErr } = await supabase
       .from("tickets")
-      .update({
-        resolution_note: trimmed,
-        resolved_at: new Date().toISOString(),
-        status: "resolved",
-      })
+      .update(updatePayload)
       .eq("id", ticket.id)
       .eq("owner_id", user.id)
       .eq("status", "open");
@@ -288,13 +313,37 @@ export default function OwnerTicketDetailPage() {
                   placeholder="Type your response…"
                   disabled={submitting}
                 />
-                <button
-                  type="submit"
-                  disabled={submitting}
-                  className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
-                >
-                  {submitting ? "Sending…" : "Submit response"}
-                </button>
+<div className="flex gap-2">
+                  {needsApproval() ? (
+                    <>
+                      <button
+                        type="submit"
+                        onClick={() => setSubmitAction("approve")}
+                        disabled={submitting}
+                        className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 hover:bg-emerald-700"
+                      >
+                        {submitting && submitAction === "approve" ? "Saving…" : "Approve"}
+                      </button>
+                      <button
+                        type="submit"
+                        onClick={() => setSubmitAction("decline")}
+                        disabled={submitting}
+                        className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 hover:bg-red-700"
+                      >
+                        {submitting && submitAction === "decline" ? "Saving…" : "Decline"}
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="submit"
+                      onClick={() => setSubmitAction("acknowledge")}
+                      disabled={submitting}
+                      className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                    >
+                      {submitting ? "Sending…" : "Acknowledge"}
+                    </button>
+                  )}
+                </div>
               </form>
             </section>
           ) : null}
