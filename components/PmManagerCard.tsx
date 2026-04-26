@@ -232,6 +232,27 @@ export default function PmManagerCard({
                       </div>
                       <div className="flex-1">
                         <label className="block text-xs text-zinc-500 dark:text-zinc-400">
+                          Approval threshold ($)
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          step={1}
+                          value={editState.maintenanceThreshold}
+                          onChange={(e) =>
+                            setEditState(
+                              (s) =>
+                                s && {
+                                  ...s,
+                                  maintenanceThreshold: e.target.value,
+                                }
+                            )
+                          }
+                          className="mt-0.5 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50"
+                        />
+                      </div>
+                      <div className="flex-1">
+                        <label className="block text-xs text-zinc-500 dark:text-zinc-400">
                           Effective date
                         </label>
                         <input
