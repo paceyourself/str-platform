@@ -11,22 +11,20 @@ DECLARE
   v_booking_ids uuid[];
   v_count integer;
 BEGIN
-  -- Require exactly one scope parameter
   IF (p_batch_id IS NOT NULL)::int + 
      (p_property_id IS NOT NULL)::int + 
      (p_owner_id IS NOT NULL)::int != 1 THEN
     RAISE EXCEPTION 'Exactly one of p_batch_id, p_property_id, or p_owner_id must be provided';
   END IF;
 
-  -- Collect target booking IDs
   IF p_batch_id IS NOT NULL THEN
-    SELECT array_agg(id) INTO v_booking_ids
-    FROM bookings WHERE upload_batch_id = p_batch_id;
+    SELECT array_agg(b.id) INTO v_booking_ids
+    FROM bookings b WHERE b.upload_batch_id = p_batch_id;
   ELSIF p_property_id IS NOT NULL THEN
-    SELECT array_agg(id) INTO v_booking_ids
-    FROM bookings WHERE property_id = p_property_id;
+    SELECT array_agg(b.id) INTO v_booking_ids
+    FROM bookings b WHERE b.property_id = p_property_id;
   ELSIF p_owner_id IS NOT NULL THEN
-    SELECT array_agg(id) INTO v_booking_ids
+    SELECT array_agg(b.id) INTO v_booking_ids
     FROM bookings b
     JOIN properties p ON p.id = b.property_id
     WHERE p.owner_id = p_owner_id;
@@ -38,20 +36,16 @@ BEGIN
 
   v_count := array_length(v_booking_ids, 1);
 
-  -- Step 1: Nullify ticket references
   UPDATE tickets
   SET related_booking_id = NULL
   WHERE related_booking_id = ANY(v_booking_ids);
 
-  -- Step 2: Delete revenue allocations
   DELETE FROM booking_revenue_allocations
   WHERE grouped_booking_id = ANY(v_booking_ids);
 
-  -- Step 3: Delete child bookings (group members)
   DELETE FROM bookings
   WHERE group_booking_id = ANY(v_booking_ids);
 
-  -- Step 4: Delete target bookings
   DELETE FROM bookings
   WHERE id = ANY(v_booking_ids);
 
@@ -62,6 +56,5 @@ BEGIN
 END;
 $$;
 
--- Restrict execution to admin users only via RLS on the function
 REVOKE ALL ON FUNCTION admin_purge_bookings FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION admin_purge_bookings TO authenticated;
