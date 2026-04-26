@@ -8,6 +8,7 @@ type PropertyFeeSummary = {
   name: string;
   pm_fee_pct: number | null;
   pm_monthly_fixed_fee: number | null;
+  contract_maintenance_threshold: number | null;
   relId: string;
 };
 
@@ -23,6 +24,7 @@ type EditState = {
   relId: string;
   pmFeePct: string;
   pmMonthlyFixedFee: string;
+  maintenanceThreshold: string;  
   effectiveDate: string;
   submitting: boolean;
   error: string | null;
@@ -54,6 +56,10 @@ export default function PmManagerCard({
         prop.pm_monthly_fixed_fee != null
           ? String(prop.pm_monthly_fixed_fee)
           : "",
+          maintenanceThreshold:
+          prop.contract_maintenance_threshold != null
+            ? String(prop.contract_maintenance_threshold)
+            : "",
       effectiveDate: new Date().toISOString().slice(0, 10),
       submitting: false,
       error: null,
@@ -91,10 +97,20 @@ export default function PmManagerCard({
         feeRow.pm_monthly_fixed_fee = n;
       }
     } else {
-      relFeeUpdate.pm_monthly_fixed_fee = null;
-    }
-
-    const { error: uErr } = await supabase
+        relFeeUpdate.pm_monthly_fixed_fee = null;
+      }
+  
+      if (editState.maintenanceThreshold.trim()) {
+        const n = Number(editState.maintenanceThreshold);
+        if (Number.isFinite(n)) {
+          relFeeUpdate.contract_maintenance_threshold = n;
+          feeRow.approval_threshold = n;
+        }
+      } else {
+        relFeeUpdate.contract_maintenance_threshold = null;
+      }
+  
+      const { error: uErr } = await supabase
       .from("owner_pm_relationships")
       .update(relFeeUpdate)
       .eq("id", editState.relId);

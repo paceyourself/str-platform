@@ -32,6 +32,7 @@ type OwnerPmSummaryRow = {
   start_date: string | null;
   pm_fee_pct: number | null;
   pm_monthly_fixed_fee: number | null;
+  contract_maintenance_threshold: number | null;
   pm_profiles: PmProfileNested | PmProfileNested[] | null;
   properties:
     | { property_name: string | null; address_line1: string | null; city: string | null }
@@ -54,6 +55,7 @@ type PropertyFeeSummary = {
   name: string;
   pm_fee_pct: number | null;
   pm_monthly_fixed_fee: number | null;
+  contract_maintenance_threshold: number | null;
   relId: string;
 };
 
@@ -525,6 +527,7 @@ export default function DashboardPage() {
         start_date,
         pm_fee_pct,
         pm_monthly_fixed_fee,
+        contract_maintenance_threshold,
         pm_profiles ( company_name, profile_claimed ),
         properties ( property_name, address_line1, city )
       `
@@ -758,12 +761,13 @@ export default function DashboardPage() {
           ? (pm[0] as { profile_claimed?: boolean })?.profile_claimed === true
           : (pm as { profile_claimed?: boolean })?.profile_claimed === true;
 
-      const propEntry: PropertyFeeSummary = {
-        name: propertyName,
-        pm_fee_pct: row.pm_fee_pct ?? null,
-        pm_monthly_fixed_fee: row.pm_monthly_fixed_fee ?? null,
-        relId: row.id,
-      };
+          const propEntry: PropertyFeeSummary = {
+            name: propertyName,
+            pm_fee_pct: row.pm_fee_pct ?? null,
+            pm_monthly_fixed_fee: row.pm_monthly_fixed_fee ?? null,
+            contract_maintenance_threshold: row.contract_maintenance_threshold ?? null,
+            relId: row.id,
+          };
 
       const existing = byPm.get(pmId);
       if (!existing) {
