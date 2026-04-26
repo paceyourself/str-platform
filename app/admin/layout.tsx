@@ -38,6 +38,7 @@ export default async function AdminLayout({
             <a href="/admin/pricing" className="text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100">Pricing</a>
             <a href="/admin/settings" className="text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100">Settings</a>
             <a href="/admin/user-management" className="text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100">User Mgt</a>
+            <a href="/admin/bookings-purge" className="text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100">Bookings Purge</a>            
             <a href="/admin/file-format-editor" className="text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100">File Format Editor</a>
             <a href="/admin/admin-help" className="text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100">Admin Help</a>
           </nav>
