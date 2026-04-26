@@ -286,7 +286,13 @@ export default function AdminPropertiesPage() {
             </table>
           )}
         </div>
-      )}
-    </div>
-  );
+)}
+
+{tab === "properties" && (
+  <div className="mt-6 rounded-lg border border-zinc-200 dark:border-zinc-700 px-6 py-10 text-center">
+    <p className="text-sm text-zinc-500">Properties list — coming Sprint 9.</p>
+  </div>
+)}
+</div>
+);
 }
