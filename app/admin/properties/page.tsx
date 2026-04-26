@@ -18,7 +18,7 @@ type EditState = {
   contract_maintenance_threshold: string;
 };
 
-type Tab = "fees";
+type Tab = "fees" | "properties";
 
 export default function AdminPropertiesPage() {
   const supabase = createClient();
@@ -164,6 +164,17 @@ export default function AdminPropertiesPage() {
           ].join(" ")}
         >
           Fee Setup
+        </button>
+        <button
+          onClick={() => setTab("properties")}
+          className={[
+            "px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
+            tab === "properties"
+              ? "border-zinc-900 text-zinc-900 dark:border-zinc-50 dark:text-zinc-50"
+              : "border-transparent text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300",
+          ].join(" ")}
+        >
+          Properties
         </button>
       </div>
 
