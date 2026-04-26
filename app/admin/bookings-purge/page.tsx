@@ -38,8 +38,25 @@ export default function AdminBookingsPurgePage() {
         .order("created_at", { ascending: false }),
       supabase
         .from("bookings")
-        .select("id, property_id, upload_batch_id, properties(property_name, owner_id, owner_profiles(display_name))"),
+        .select("id, property_id, upload_batch_id, properties(property_name, owner_id)"),    
     ]);
+
+// Fetch owner names separately — nested embed blocked by RLS
+const ownerIds = [...new Set(
+    (bookingData ?? [])
+    .map((b) => (b.properties as unknown as { owner_id: string } | null)?.owner_id) 
+      .filter((id): id is string => !!id)
+  )];
+  const ownerNameMap = new Map<string, string>();
+  if (ownerIds.length > 0) {
+    const { data: ownerData } = await supabase
+      .from("owner_profiles")
+      .select("id, display_name")
+      .in("id", ownerIds);
+    for (const o of ownerData ?? []) {
+      ownerNameMap.set(o.id as string, (o.display_name as string | null) ?? "");
+    }
+  }
 
     // Build batch options
     const batchMap = new Map<string, BatchOption>();
@@ -64,11 +81,11 @@ export default function AdminBookingsPurgePage() {
     for (const b of bookingData ?? []) {
       const pid = b.property_id as string;
       if (!propMap.has(pid)) {
-        const prop = b.properties as unknown as { property_name: string | null; owner_id: string; owner_profiles: { display_name: string | null }[] | null } | null;
+        const prop = b.properties as unknown as { property_name: string | null; owner_id: string } | null;    
         propMap.set(pid, {
           id: pid,
           property_name: prop?.property_name ?? null,
-          owner_name: prop?.owner_profiles?.[0]?.display_name ?? null,
+          owner_name: prop?.owner_id ? ownerNameMap.get(prop.owner_id) ?? null : null,
           booking_count: 0,
         });
       }
@@ -83,15 +100,15 @@ export default function AdminBookingsPurgePage() {
     // Build owner options
     const ownerMap = new Map<string, OwnerOption>();
     for (const b of bookingData ?? []) {
-        const prop = b.properties as unknown as { owner_id: string; owner_profiles: { display_name: string | null }[] | null } | null;
-      if (!prop) continue;
-      const oid = prop.owner_id;
-      if (!ownerMap.has(oid)) {
-        ownerMap.set(oid, {
-          id: oid,
-          display_name: prop?.owner_profiles?.[0]?.display_name ?? null,
-          booking_count: 0,
-        });
+        const prop = b.properties as unknown as { owner_id: string } | null;    
+        if (!prop) continue;
+        const oid = prop.owner_id;
+        if (!ownerMap.has(oid)) {
+          ownerMap.set(oid, {
+            id: oid,
+            display_name: ownerNameMap.get(oid) ?? null,
+            booking_count: 0,
+          });
       }
       ownerMap.get(oid)!.booking_count++;
     }
