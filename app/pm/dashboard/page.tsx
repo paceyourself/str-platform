@@ -114,6 +114,18 @@ export default function PmDashboardPage() {
       return;
     }
 
+    // Check deactivation — block data access if deactivated_at is set
+    const { data: pmProfile } = await supabase
+      .from("pm_profiles")
+      .select("deactivated_at")
+      .eq("claimed_by_user_id", user.id)
+      .maybeSingle();
+    if (pmProfile?.deactivated_at) {
+      await supabase.auth.signOut();
+      window.location.href = "/login?reason=deactivated";
+      return;
+    }
+
     const { data, error } = await supabase
       .from("pm_profiles")
       .select("id, company_name, profile_claimed, claimed_by_user_id")
