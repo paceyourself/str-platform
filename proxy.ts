@@ -93,10 +93,14 @@ if (user && (isDashboardPath(pathname) || isPmPath(pathname))) {
     .maybeSingle();
 
   if (ownerProfile?.deactivated_at) {
+    await supabase.auth.signOut();
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     url.search = "?reason=deactivated";
-    return NextResponse.redirect(url);
+    const redirectResponse = NextResponse.redirect(url);
+    // Clear auth cookies to prevent loop
+    redirectResponse.cookies.delete("sb-" + process.env.NEXT_PUBLIC_SUPABASE_URL!.split("//")[1].split(".")[0] + "-auth-token");
+    return redirectResponse;
   }
 
   if (isPmPath(pathname)) {
@@ -107,10 +111,13 @@ if (user && (isDashboardPath(pathname) || isPmPath(pathname))) {
       .maybeSingle();
 
     if (pmProfile?.deactivated_at) {
+      await supabase.auth.signOut();
       const url = request.nextUrl.clone();
       url.pathname = "/login";
       url.search = "?reason=deactivated";
-      return NextResponse.redirect(url);
+      const redirectResponse = NextResponse.redirect(url);
+      redirectResponse.cookies.delete("sb-" + process.env.NEXT_PUBLIC_SUPABASE_URL!.split("//")[1].split(".")[0] + "-auth-token");
+      return redirectResponse;
     }
   }
 }
@@ -129,6 +136,10 @@ if (user && (isDashboardPath(pathname) || isPmPath(pathname))) {
       const dest = destinationFromAuthState(state);
 
       if (isLoginPath(pathname) || isSignupPath(pathname)) {
+        // Don't redirect away from login if deactivated reason is present
+        if (request.nextUrl.searchParams.get("reason") === "deactivated") {
+          return supabaseResponse;
+        }
         if (normalizePathname(pathname) !== dest) {
           return redirectTo(request, dest);
         }
