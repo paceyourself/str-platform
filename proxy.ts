@@ -84,6 +84,38 @@ export default async function proxy(request: NextRequest) {
     return NextResponse.redirect(url);
   }
 
+// Deactivation check — block access to dashboard and PM routes
+if (user && (isDashboardPath(pathname) || isPmPath(pathname))) {
+  const { data: ownerProfile } = await supabase
+    .from("owner_profiles")
+    .select("deactivated_at")
+    .eq("id", user.id)
+    .maybeSingle();
+
+  if (ownerProfile?.deactivated_at) {
+    const url = request.nextUrl.clone();
+    url.pathname = "/login";
+    url.search = "?reason=deactivated";
+    return NextResponse.redirect(url);
+  }
+
+  if (isPmPath(pathname)) {
+    const { data: pmProfile } = await supabase
+      .from("pm_profiles")
+      .select("deactivated_at")
+      .eq("claimed_by_user_id", user.id)
+      .maybeSingle();
+
+    if (pmProfile?.deactivated_at) {
+      const url = request.nextUrl.clone();
+      url.pathname = "/login";
+      url.search = "?reason=deactivated";
+      return NextResponse.redirect(url);
+    }
+  }
+}
+
+
   // Authenticated — role-based routing
   if (user) {
     const needsRoleRouting =
