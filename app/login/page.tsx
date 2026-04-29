@@ -4,9 +4,12 @@ import { createClient } from "@/lib/supabase";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { useSearchParams } from "next/navigation";
 
 export default function LoginPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const reason = searchParams.get("reason");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -47,6 +50,14 @@ export default function LoginPage() {
         </p>
 
         <form onSubmit={handleSubmit} className="mt-8 space-y-5">
+          {reason === "deactivated" && (
+            <div
+              role="alert"
+              className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-200"
+            >
+              Your account has been deactivated. Please contact support if you believe this is an error.
+            </div>
+          )}
           {error ? (
             <div
               role="alert"
