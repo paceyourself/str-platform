@@ -2,6 +2,13 @@
   "name": "str-platform",
   "version": "0.1.0",
   "private": true,
+  "ts-node": {
+    "compilerOptions": {
+      "module": "commonjs",
+      "moduleResolution": "node",
+      "esModuleInterop": true
+    }
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -24,9 +31,12 @@
     "@types/papaparse": "^5.5.2",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "dotenv": "^17.4.2",
     "eslint": "^9",
     "eslint-config-next": "16.2.2",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "ts-node": "^10.9.2",
+    "typescript": "^5",
+    "xlsx": "^0.18.5"
   }
 }

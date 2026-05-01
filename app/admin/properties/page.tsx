@@ -20,11 +20,25 @@ type EditState = {
 
 type Tab = "fees" | "properties";
 
+type PropertyRow = {
+  property_id: string;
+  property_name: string | null;
+  market_id: string | null;
+  owner_name: string | null;
+  pm_name: string | null;
+  pm_fee_pct: number | null;
+  pm_monthly_fixed_fee: number | null;
+  contract_maintenance_threshold: number | null;
+};
+
 export default function AdminPropertiesPage() {
   const supabase = createClient();
   const [tab, setTab] = useState<Tab>("fees");
   const [rows, setRows] = useState<FeeRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [propertyRows, setPropertyRows] = useState<PropertyRow[]>([]);
+  const [propertiesLoading, setPropertiesLoading] = useState(false);
+  const [propertiesError, setPropertiesError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editState, setEditState] = useState<EditState>({ pm_fee_pct: "", pm_monthly_fixed_fee: "", contract_maintenance_threshold: "" });
   const [saving, setSaving] = useState(false);
@@ -72,7 +86,77 @@ export default function AdminPropertiesPage() {
     setLoading(false);
   }, [supabase]);
 
-  useEffect(() => { load(); }, [load]);
+  const loadProperties = useCallback(async () => {
+    setPropertiesLoading(true);
+    setPropertiesError(null);
+    const { data, error: qErr } = await supabase
+      .from("properties")
+      .select(`
+        id,
+        property_name,
+        market_id,
+        deleted_at,
+        owner_pm_relationships (
+          active,
+          pm_fee_pct,
+          pm_monthly_fixed_fee,
+          contract_maintenance_threshold,
+          owner_profiles ( display_name ),
+          pm_profiles ( company_name )
+        )
+      `)
+      .is("deleted_at", null)
+      .order("property_name");
+
+    if (qErr) {
+      setPropertiesError(qErr.message);
+      setPropertiesLoading(false);
+      return;
+    }
+
+    const mapped: PropertyRow[] = (data ?? []).map((r) => {
+      const rels = r.owner_pm_relationships as unknown as
+        | Array<{
+            active: boolean | null;
+            pm_fee_pct: number | null;
+            pm_monthly_fixed_fee: number | null;
+            contract_maintenance_threshold: number | null;
+            owner_profiles: { display_name: string | null } | null;
+            pm_profiles: { company_name: string | null } | null;
+          }>
+        | null;
+      const activeRel = (rels ?? []).find((x) => x.active === true);
+      const ownerProf = activeRel?.owner_profiles ?? null;
+      const pmProf = activeRel?.pm_profiles ?? null;
+
+      return {
+        property_id: r.id as string,
+        property_name: (r.property_name as string | null) ?? null,
+        market_id: (r.market_id as string | null) ?? null,
+        owner_name: ownerProf?.display_name ?? null,
+        pm_name: pmProf?.company_name ?? null,
+        pm_fee_pct: activeRel ? (activeRel.pm_fee_pct as number | null) : null,
+        pm_monthly_fixed_fee: activeRel
+          ? (activeRel.pm_monthly_fixed_fee as number | null)
+          : null,
+        contract_maintenance_threshold: activeRel
+          ? (activeRel.contract_maintenance_threshold as number | null)
+          : null,
+      };
+    });
+
+    setPropertyRows(mapped);
+    setPropertiesLoading(false);
+  }, [supabase]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  useEffect(() => {
+    if (tab !== "properties") return;
+    loadProperties();
+  }, [tab, loadProperties]);
 
   function startEdit(row: FeeRow) {
     setEditingId(row.relationship_id);
@@ -143,6 +227,11 @@ export default function AdminPropertiesPage() {
   function fmt(val: number | null, prefix = "") {
     if (val == null) return <span className="text-zinc-400">—</span>;
     return `${prefix}${val}`;
+  }
+
+  function fmtMonthlyFixed(val: number | null) {
+    if (val == null) return <span className="text-zinc-400">—</span>;
+    return `$${val}/mo`;
   }
 
   return (
@@ -286,13 +375,50 @@ export default function AdminPropertiesPage() {
             </table>
           )}
         </div>
-)}
+      )}
 
-{tab === "properties" && (
-  <div className="mt-6 rounded-lg border border-zinc-200 dark:border-zinc-700 px-6 py-10 text-center">
-    <p className="text-sm text-zinc-500">Properties list — coming Sprint 9.</p>
-  </div>
-)}
-</div>
-);
+      {tab === "properties" && (
+        <>
+          {propertiesError && (
+            <p className="mt-3 text-sm text-red-600 dark:text-red-400">{propertiesError}</p>
+          )}
+          <div className="mt-4 overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-700">
+            {propertiesLoading ? (
+              <p className="px-4 py-6 text-sm text-zinc-500">Loading…</p>
+            ) : (
+              <table className="min-w-full divide-y divide-zinc-200 dark:divide-zinc-700 text-sm">
+                <thead className="bg-zinc-50 dark:bg-zinc-800">
+                  <tr>
+                    <th className="px-4 py-3 text-left font-medium text-zinc-500 dark:text-zinc-400">Property</th>
+                    <th className="px-4 py-3 text-left font-medium text-zinc-500 dark:text-zinc-400">Owner</th>
+                    <th className="px-4 py-3 text-left font-medium text-zinc-500 dark:text-zinc-400">PM</th>
+                    <th className="px-4 py-3 text-left font-medium text-zinc-500 dark:text-zinc-400">Market</th>
+                    <th className="px-4 py-3 text-left font-medium text-zinc-500 dark:text-zinc-400">Fee %</th>
+                    <th className="px-4 py-3 text-left font-medium text-zinc-500 dark:text-zinc-400">Fixed Fee</th>
+                    <th className="px-4 py-3 text-left font-medium text-zinc-500 dark:text-zinc-400">Threshold</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800 bg-white dark:bg-zinc-900">
+                  {propertyRows.map((row) => (
+                    <tr key={row.property_id}>
+                      <td className="px-4 py-3 text-zinc-900 dark:text-zinc-50 font-medium">{row.property_name ?? "—"}</td>
+                      <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">{row.owner_name ?? "—"}</td>
+                      <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">{row.pm_name ?? "—"}</td>
+                      <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">{row.market_id ?? "—"}</td>
+                      <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">
+                        {fmt(row.pm_fee_pct, "")}
+                        {row.pm_fee_pct != null ? "%" : ""}
+                      </td>
+                      <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">{fmtMonthlyFixed(row.pm_monthly_fixed_fee)}</td>
+                      <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">{fmt(row.contract_maintenance_threshold, "$")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
 }

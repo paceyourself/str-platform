@@ -153,6 +153,8 @@ if (user && (isDashboardPath(pathname) || isPmPath(pathname))) {
       }
 
       if (isPmPath(pathname)) {
+        // PM directory listing — not part of the logged-in PM app shell
+        if (normalizePathname(pathname) === "/pm") return supabaseResponse;
         if (state.hasPmClaim) return supabaseResponse;
         if (state.hasOwnerProfile) return redirectTo(request, "/dashboard");
         return redirectTo(request, "/signup");
