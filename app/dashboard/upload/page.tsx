@@ -34,13 +34,31 @@ type PmFieldMapping = {
   cancellation_signal_type: string | null;
 };
 
-function resolveReservationIdHeader(
-  columnMap: Record<string, string | null>
-): string | null {
-  const e = Object.entries(columnMap).find(
-    ([, v]) => v === "source_reservation_id"
+/** Matches column_map target values from Postgres/JSONB (handles extra whitespace). */
+function mapValueIsTarget(field: unknown, target: string): boolean {
+  if (field === null || field === undefined) return false;
+  return String(field).trim().toLowerCase() === target.trim().toLowerCase();
+}
+
+/** Case-insensitive match for combobox: input text vs PM company_name */
+function pmDisplayNamesMatch(
+  input: string,
+  companyName: string | null | undefined
+): boolean {
+  return (
+    input.trim().toLowerCase() === (companyName ?? "").trim().toLowerCase()
   );
-  return e?.[0]?.trim() || null;
+}
+
+function resolveReservationIdHeader(
+  columnMap: Record<string, string | null> | Record<string, unknown>
+): string | null {
+  for (const [k, v] of Object.entries(columnMap)) {
+    if (!mapValueIsTarget(v, "source_reservation_id")) continue;
+    const header = typeof k === "string" ? k.trim() : String(k ?? "").trim();
+    if (header) return header;
+  }
+  return null;
 }
 
 /** Skipped columns (null) include property name + nights — prefer a non-"nights" null key for unit matching. */
@@ -59,7 +77,9 @@ function resolvePropertyColumnHeader(
 function resolveTypeColumnHeader(
   columnMap: Record<string, string | null>
 ): string | null {
-  const e = Object.entries(columnMap).find(([, v]) => v === "raw_type_label");
+  const e = Object.entries(columnMap).find(([, v]) =>
+    mapValueIsTarget(v, "raw_type_label")
+  );
   return e?.[0]?.trim() || null;
 }
 
@@ -178,8 +198,11 @@ function rowToPayload(
   for (const [header, raw] of Object.entries(row)) {
     const key = header.trim();
     if (!Object.prototype.hasOwnProperty.call(columnMap, key)) continue;
-    const dbCol = columnMap[key];
-    if (dbCol === null || dbCol === undefined) continue;
+    const mapped = columnMap[key];
+    if (mapped === null || mapped === undefined) continue;
+    const canonical = typeof mapped === "string" ? mapped.trim() : String(mapped).trim();
+    const dbCol = canonical.toLowerCase();
+    if (!dbCol) continue;
     const v = raw.trim();
     if (!v) continue;
     if (DATE_DB_COLUMNS.has(dbCol)) {
@@ -195,8 +218,8 @@ function rowToPayload(
     }
   }
 
-  const bookedHeader = headers.find(
-    (h) => columnMap[h.trim()] === "booked_date"
+  const bookedHeader = headers.find((h) =>
+    mapValueIsTarget(columnMap[h.trim()], "booked_date")
   );
   if (bookedHeader) {
     const d = parseDateValue((row[bookedHeader] ?? "").trim());
@@ -406,13 +429,13 @@ function parseCsvForPreview(
   );
 
   const propHeader = resolvePropertyColumnHeader(columnMap);
-  const resHeader = resolveReservationIdHeader(columnMap);
   if (!propHeader) {
     return {
       error:
         "PM field mapping must include a skipped column for property matching (map unit/property column to “Skip”).",
     };
   }
+  const resHeader = resolveReservationIdHeader(columnMap);
   if (!resHeader) {
     return {
       error:
@@ -1090,14 +1113,16 @@ export default function BookingsUploadPage() {
 
   function onPmInputChange(e: React.ChangeEvent<HTMLInputElement>) {
     const v = e.target.value;
-    setPmInputValue(v);
     setPmDropdownOpen(true);
-    const name = (
-      pmList.find((p) => p.id === selectedPmId)?.company_name ?? ""
-    ).trim();
-    if (!selectedPmId || v.trim() !== name) {
-      setSelectedPmId("");
+    if (selectedPmId) {
+      const locked = pmList.find((p) => p.id === selectedPmId);
+      if (locked && pmDisplayNamesMatch(v, locked.company_name)) {
+        setPmInputValue(v);
+        return;
+      }
     }
+    if (selectedPmId) setSelectedPmId("");
+    setPmInputValue(v);
   }
 
   function onPmInputFocus() {
@@ -1107,8 +1132,11 @@ export default function BookingsUploadPage() {
   }
 
   function selectPmOption(pm: PmOption) {
-    setSelectedPmId(pm.id);
-    setPmInputValue(pm.company_name);
+    const id =
+      typeof pm.id === "string" ? pm.id : String(pm.id ?? "").trim();
+    if (!id) return;
+    setSelectedPmId(id);
+    setPmInputValue(pm.company_name ?? "");
     setPmDropdownOpen(false);
   }
 
