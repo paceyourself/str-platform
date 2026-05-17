@@ -27,25 +27,55 @@ type ParsedUploadState = {
   csvReservationIds: Set<string>;
 };
 
-/**
- * CSV column header → bookings column (keys must match export headers exactly).
- * `null` = skip (not inserted from this map).
- */
-const BOOKINGS_CSV_MAP: Record<string, string | null> = {
-  "Reservation Id": "source_reservation_id",
-  Status: "status",
-  Unit: null,
-  "Booked Date": "booked_date",
-  "Check-In": "check_in",
-  Checkout: "check_out",
-  Nights: "nights",
-  Income: "net_owner_revenue",
-  Currency: "currency",
+
+type PmFieldMapping = {
+  column_map: Record<string, string | null>;
+  type_label_map: Record<string, string>;
+  cancellation_signal_type: string | null;
 };
 
-const DATE_DB_COLUMNS = new Set(["check_in", "check_out", "booked_date"]);
+function resolveReservationIdHeader(
+  columnMap: Record<string, string | null>
+): string | null {
+  const e = Object.entries(columnMap).find(
+    ([, v]) => v === "source_reservation_id"
+  );
+  return e?.[0]?.trim() || null;
+}
 
-/** Oversee CSV "Type" → bookings.block_type; unknown/empty → "other". */
+/** Skipped columns (null) include property name + nights — prefer a non-"nights" null key for unit matching. */
+function resolvePropertyColumnHeader(
+  columnMap: Record<string, string | null>
+): string | null {
+  const nullKeys = Object.entries(columnMap)
+    .filter(([, v]) => v === null)
+    .map(([k]) => k.trim())
+    .filter(Boolean);
+  const skip = new Set(["nights", "night"]);
+  const preferred = nullKeys.filter((k) => !skip.has(k.toLowerCase()));
+  return preferred[0] ?? nullKeys[0] ?? null;
+}
+
+function resolveTypeColumnHeader(
+  columnMap: Record<string, string | null>
+): string | null {
+  const e = Object.entries(columnMap).find(([, v]) => v === "raw_type_label");
+  return e?.[0]?.trim() || null;
+}
+
+function resolveBlockType(
+  csvType: string,
+  typeLabelMap: Record<string, string>
+): string {
+  const t = csvType.trim();
+  if (!t) return "other";
+  if (Object.prototype.hasOwnProperty.call(typeLabelMap, t)) {
+    return typeLabelMap[t] ?? "other";
+  }
+  return mapCsvTypeToBlockType(t);
+}
+
+/** Oversee CSV "Type" → bookings.block_type fallback when not in PM type_label_map. */
 function mapCsvTypeToBlockType(csvType: string): string {
   const t = csvType.trim();
   if (!t) return "other";
@@ -85,6 +115,8 @@ function parseDateValue(raw: string): string | null {
   }
   return null;
 }
+
+const DATE_DB_COLUMNS = new Set(["check_in", "check_out", "booked_date"]);
 
 const BASE_BOOKING_KEYS = new Set([
   "property_id",
@@ -127,7 +159,10 @@ function rowToPayload(
   cells: string[],
   propertyId: string,
   ownerPmRelationshipId: string | null,
-  sourceFileId: string
+  sourceFileId: string,
+  columnMap: Record<string, string | null>,
+  typeLabelMap: Record<string, string>,
+  typeColumnHeader: string
 ): Record<string, unknown> | null {
   const row: Record<string, string> = {};
   headers.forEach((h, i) => {
@@ -142,8 +177,9 @@ function rowToPayload(
 
   for (const [header, raw] of Object.entries(row)) {
     const key = header.trim();
-    const dbCol = BOOKINGS_CSV_MAP[key];
-    if (dbCol == null) continue;
+    if (!Object.prototype.hasOwnProperty.call(columnMap, key)) continue;
+    const dbCol = columnMap[key];
+    if (dbCol === null || dbCol === undefined) continue;
     const v = raw.trim();
     if (!v) continue;
     if (DATE_DB_COLUMNS.has(dbCol)) {
@@ -151,7 +187,7 @@ function rowToPayload(
       if (d) {
         payload[dbCol] = d;
       }
-    } else if (dbCol === "nights" || dbCol === "net_owner_revenue") {
+    } else if (dbCol === "gross_revenue") {
       const n = Number(String(v).replace(/[^0-9.-]/g, ""));
       if (Number.isFinite(n)) payload[dbCol] = n;
     } else {
@@ -160,18 +196,18 @@ function rowToPayload(
   }
 
   const bookedHeader = headers.find(
-    (h) => BOOKINGS_CSV_MAP[h.trim()] === "booked_date"
+    (h) => columnMap[h.trim()] === "booked_date"
   );
   if (bookedHeader) {
     const d = parseDateValue((row[bookedHeader] ?? "").trim());
     if (d) payload.booked_date = d;
   }
 
-  const typeRaw = (row["Type"] ?? "").trim();
+  const typeRaw = (row[typeColumnHeader] ?? "").trim();
   if (typeRaw) {
     payload.raw_type_label = typeRaw;
   }
-  payload.block_type = mapCsvTypeToBlockType(typeRaw);
+  payload.block_type = resolveBlockType(typeRaw, typeLabelMap);
 
   const dataKeys = Object.keys(payload).filter((k) => !BASE_BOOKING_KEYS.has(k));
   const substantiveKeys = dataKeys.filter(
@@ -348,7 +384,8 @@ function suppressPostStaySurveyForRecentContract(
 
 function parseCsvForPreview(
   normalizedText: string,
-  nameLookup: Map<string, PropertyOption>
+  nameLookup: Map<string, PropertyOption>,
+  columnMap: Record<string, string | null>
 ): Omit<ParsedUploadState, "fileName"> | { error: string } {
   const papaResult = Papa.parse<Record<string, unknown>>(normalizedText, {
     header: true,
@@ -368,21 +405,36 @@ function parseCsvForPreview(
     (r) => r && typeof r === "object" && Object.keys(r).length > 0
   );
 
+  const propHeader = resolvePropertyColumnHeader(columnMap);
+  const resHeader = resolveReservationIdHeader(columnMap);
+  if (!propHeader) {
+    return {
+      error:
+        "PM field mapping must include a skipped column for property matching (map unit/property column to “Skip”).",
+    };
+  }
+  if (!resHeader) {
+    return {
+      error:
+        "PM field mapping must map the reservation id column to source_reservation_id.",
+    };
+  }
+
   const unitCounts = new Map<string, number>();
   const csvReservationIds = new Set<string>();
 
   for (const rowObj of rawRows) {
-    const unitRaw = cellString(rowObj["Unit"]).trim();
-    const unitLabel = unitRaw || "(empty Unit)";
+    const unitRaw = cellString(rowObj[propHeader]).trim();
+    const unitLabel = unitRaw || "(empty unit column)";
     unitCounts.set(unitLabel, (unitCounts.get(unitLabel) ?? 0) + 1);
 
-    const resRaw = cellString(rowObj["Reservation Id"]).trim();
+    const resRaw = cellString(rowObj[resHeader]).trim();
     if (resRaw) csvReservationIds.add(resRaw);
   }
 
   const unknownUnits: string[] = [];
   for (const unitLabel of unitCounts.keys()) {
-    if (unitLabel === "(empty Unit)") {
+    if (unitLabel === "(empty unit column)") {
       unknownUnits.push(unitLabel);
       continue;
     }
@@ -420,6 +472,12 @@ export default function BookingsUploadPage() {
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+
+  const [pmFieldMapping, setPmFieldMapping] =
+    useState<PmFieldMapping | null>(null);
+  const [mappingLoad, setMappingLoad] = useState<
+    "idle" | "loading" | "ready" | "missing" | "error"
+  >("idle");
 
   const nameLookup = useMemo(
     () => buildPropertyNameLookup(properties),
@@ -522,6 +580,43 @@ export default function BookingsUploadPage() {
     setFileInputKey((k) => k + 1);
   }, [selectedPmId]);
 
+  useEffect(() => {
+    if (!selectedPmId) {
+      setPmFieldMapping(null);
+      setMappingLoad("idle");
+      return;
+    }
+    let cancelled = false;
+    setMappingLoad("loading");
+    (async () => {
+      const { data, error } = await supabase
+        .from("pm_field_mappings")
+        .select("column_map, type_label_map, cancellation_signal_type")
+        .eq("pm_id", selectedPmId)
+        .maybeSingle();
+      if (cancelled) return;
+      if (error) {
+        setPmFieldMapping(null);
+        setMappingLoad("error");
+        return;
+      }
+      if (!data) {
+        setPmFieldMapping(null);
+        setMappingLoad("missing");
+        return;
+      }
+      setPmFieldMapping({
+        column_map: data.column_map as Record<string, string | null>,
+        type_label_map: data.type_label_map as Record<string, string>,
+        cancellation_signal_type: data.cancellation_signal_type as string | null,
+      });
+      setMappingLoad("ready");
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedPmId, supabase]);
+
   async function onFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
     setError(null);
     setStatus(null);
@@ -540,9 +635,30 @@ export default function BookingsUploadPage() {
       return;
     }
 
+    if (mappingLoad === "loading") {
+      setError("Loading PM file format… Try again in a moment.");
+      e.target.value = "";
+      return;
+    }
+    if (mappingLoad !== "ready" || !pmFieldMapping) {
+      setError(
+        mappingLoad === "missing"
+          ? "No field mapping configured for this PM. Please contact an administrator."
+          : mappingLoad === "error"
+            ? "Could not load PM field mapping. Try again."
+            : "Select your property manager first."
+      );
+      e.target.value = "";
+      return;
+    }
+
     const text = await file.text();
     const normalized = text.replace(/^\uFEFF/, "");
-    const preview = parseCsvForPreview(normalized, nameLookup);
+    const preview = parseCsvForPreview(
+      normalized,
+      nameLookup,
+      pmFieldMapping.column_map
+    );
 
     if ("error" in preview) {
       setError(preview.error);
@@ -559,6 +675,17 @@ export default function BookingsUploadPage() {
 
   async function onConfirmUpload() {
     if (!parsed || !selectedPmId) return;
+
+    if (mappingLoad !== "ready" || !pmFieldMapping) {
+      setError(
+        mappingLoad === "missing"
+          ? "No field mapping configured for this PM. Please contact an administrator."
+          : mappingLoad === "error"
+            ? "Could not load PM field mapping. Try again."
+            : "Still loading PM file format."
+      );
+      return;
+    }
 
     setError(null);
     setStatus(null);
@@ -660,6 +787,18 @@ export default function BookingsUploadPage() {
     let rowsSkippedOther = 0;
     const payloads: Record<string, unknown>[] = [];
 
+    const columnMap = pmFieldMapping.column_map;
+    const typeLabelMap = pmFieldMapping.type_label_map;
+    const propHeader = resolvePropertyColumnHeader(columnMap);
+    const typeCol = resolveTypeColumnHeader(columnMap) ?? "Type";
+    if (!propHeader) {
+      setUploading(false);
+      setError(
+        "Invalid PM field mapping: add a skipped CSV column for property / unit matching."
+      );
+      return;
+    }
+
     for (const rowObj of rawRows) {
       const cells = headers.map((h) => cellString(rowObj[h]));
       const row: Record<string, string> = {};
@@ -667,17 +806,24 @@ export default function BookingsUploadPage() {
         row[h] = cells[i] ?? "";
       });
 
-      const unitRaw = (row["Unit"] ?? "").trim();
+      const unitRaw = (row[propHeader] ?? "").trim();
       if (!unitRaw) {
         rowsUnmatchedUnit += 1;
-        console.warn("[bookings upload] unmatched row (empty Unit)", row);
+        console.warn(
+          "[bookings upload] unmatched row (empty property column)",
+          row
+        );
         continue;
       }
 
       const prop = nameLookup.get(unitRaw.toLowerCase());
       if (!prop) {
         rowsUnmatchedUnit += 1;
-        console.warn("[bookings upload] unmatched Unit:", unitRaw, row);
+        console.warn(
+          "[bookings upload] unmatched property column value:",
+          unitRaw,
+          row
+        );
         continue;
       }
 
@@ -692,7 +838,16 @@ export default function BookingsUploadPage() {
         continue;
       }
 
-      const p = rowToPayload(headers, cells, prop.id, relId, sourceFileId);
+      const p = rowToPayload(
+        headers,
+        cells,
+        prop.id,
+        relId,
+        sourceFileId,
+        columnMap,
+        typeLabelMap,
+        typeCol
+      );
       if (!p) {
         rowsSkippedOther += 1;
         continue;
@@ -731,7 +886,7 @@ export default function BookingsUploadPage() {
     if (uniquePayloads.length === 0) {
       setUploading(false);
       setError(
-        "No rows could be imported. Check Unit names, reservation IDs, and that each property has an active relationship with the selected PM."
+        "No rows could be imported. Check the property column values, reservation IDs, and that each property has an active relationship with the selected PM."
       );
       return;
     }
@@ -966,7 +1121,7 @@ export default function BookingsUploadPage() {
         <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
           Upload your PM&apos;s full export in one file. Each import replaces the
           in-app picture for this PM: reservations missing from the file are
-          marked cancelled. Units in the CSV are matched to your properties by
+          marked cancelled. The CSV property/unit column is matched to your properties by
           name (case-insensitive).
         </p>
       </div>
@@ -1001,7 +1156,6 @@ export default function BookingsUploadPage() {
           aria-autocomplete="list"
           autoComplete="off"
           disabled={loadingPms || uploading}
-          value={loadingPms ? "" : pmInputValue}
           onChange={onPmInputChange}
           onFocus={onPmInputFocus}
           placeholder={loadingPms ? "Loading…" : "Select PM"}
@@ -1041,6 +1195,20 @@ export default function BookingsUploadPage() {
         ) : null}
       </div>
 
+      {selectedPmId && mappingLoad === "missing" ? (
+        <div
+          role="alert"
+          className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-100"
+        >
+          No field mapping configured for this PM. Please contact an administrator.
+        </div>
+      ) : null}
+      {selectedPmId && mappingLoad === "loading" ? (
+        <p className="text-sm text-zinc-500 dark:text-zinc-400">
+          Loading PM CSV format…
+        </p>
+      ) : null}
+
       <div>
         <label
           htmlFor="csv-upload-input"
@@ -1051,7 +1219,7 @@ export default function BookingsUploadPage() {
         <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
           {parsed
             ? `Selected: ${parsed.fileName} — preview below; confirm to apply.`
-            : "Columns include Reservation Id, Unit, Type, Status, dates, Income, etc."}
+            : "Headers must match your PM’s configured CSV format (set by an admin)."}
         </p>
         <div className="relative mt-2 min-h-[44px]">
           <div
@@ -1070,7 +1238,12 @@ export default function BookingsUploadPage() {
             id="csv-upload-input"
             type="file"
             accept=".csv,text/csv"
-            disabled={uploading}
+            disabled={
+              uploading ||
+              loadingProps ||
+              !selectedPmId ||
+              mappingLoad !== "ready"
+            }
             onChange={onFileSelected}
             aria-label="Choose combined CSV file to upload"
             className="absolute inset-0 z-10 m-0 h-full w-full cursor-pointer p-0 opacity-0 disabled:cursor-not-allowed"
@@ -1094,7 +1267,7 @@ export default function BookingsUploadPage() {
 
           <div>
             <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-              Units in file
+              Property column (preview)
             </h3>
             <ul className="mt-2 list-inside list-disc space-y-1 text-sm text-zinc-800 dark:text-zinc-200">
               {unitSummaryLines.map((line, idx) => (
@@ -1108,9 +1281,9 @@ export default function BookingsUploadPage() {
               role="status"
               className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-100"
             >
-              <p className="font-medium">Unit name warning</p>
+              <p className="font-medium">Property column warning</p>
               <p className="mt-1 text-xs opacity-90">
-                These Unit values do not match any of your property names (after
+                These values do not match any of your property names (after
                 trimming). Rows for them will be skipped on import:
               </p>
               <ul className="mt-2 list-inside list-disc text-xs">
@@ -1121,7 +1294,7 @@ export default function BookingsUploadPage() {
             </div>
           ) : (
             <p className="text-xs text-emerald-800 dark:text-emerald-200">
-              All distinct Unit values match a property name in your portfolio.
+              All distinct property column values match a name in your portfolio.
             </p>
           )}
 

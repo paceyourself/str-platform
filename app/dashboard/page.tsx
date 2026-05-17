@@ -68,9 +68,9 @@ type GroupedPmSummary = {
 };
 
 type BookingRow = {
+  property_id: string | null;
   block_type: string | null;
-  net_owner_revenue: number | string | null;
-  nights: number | string | null;
+  gross_revenue: number | string | null;
   check_in: string | null;
   check_out: string | null;
 };
@@ -86,6 +86,17 @@ const GUEST_BLOCK_TYPES = new Set(["guest_ota", "guest_pm_direct"]);
 
 function isGuestBooking(blockType: string | null | undefined) {
   return blockType != null && GUEST_BLOCK_TYPES.has(blockType);
+}
+
+function stayNightsFromCheckInOut(
+  checkIn: string | null,
+  checkOut: string | null
+): number {
+  if (!checkIn || !checkOut) return 0;
+  const t0 = new Date(checkIn).getTime();
+  const t1 = new Date(checkOut).getTime();
+  if (!Number.isFinite(t0) || !Number.isFinite(t1)) return 0;
+  return Math.round((t1 - t0) / 86400000);
 }
 
 /** Formats a Postgres `date` or timestamptz string for display. Date-only `YYYY-MM-DD` is treated as a calendar day in the local timezone (avoids UTC midnight shifting the day). */
@@ -481,6 +492,19 @@ export default function DashboardPage() {
       setPropertiesLoading(false);
       return;
     }
+
+    // Check deactivation — block data access if deactivated_at is set
+    const { data: ownerProfile } = await supabase
+      .from("owner_profiles")
+      .select("deactivated_at")
+      .eq("id", user.id)
+      .single();
+    if (ownerProfile?.deactivated_at) {
+      await supabase.auth.signOut();
+      router.push("/login?reason=deactivated");
+      return;
+    }
+
     setEmail(user.email ?? null);
 
     const propsRes = await supabase
@@ -537,7 +561,9 @@ export default function DashboardPage() {
       .order("start_date", { ascending: false, nullsFirst: false }),
       supabase
         .from("bookings")
-        .select("block_type, net_owner_revenue, nights, check_in, check_out")
+        .select(
+          "property_id, block_type, gross_revenue, check_in, check_out"
+        )
         .in("property_id", propertyIds),
     ]);
 
@@ -647,19 +673,45 @@ export default function DashboardPage() {
     });
   }, [bookings, timeRange, currentYear]);
 
+  const pmFeePctByPropertyId = useMemo(() => {
+    const m = new Map<string, number | null>();
+    for (const r of pmRows) {
+      m.set(String(r.property_id), r.pm_fee_pct ?? null);
+    }
+    return m;
+  }, [pmRows]);
+
   const bookingStats = useMemo(() => {
     const guest = filteredBookings.filter((b) => isGuestBooking(b.block_type));
     const totalGuestBookings = guest.length;
-    const totalRevenue = guest.reduce(
-      (s, b) => s + (Number(b.net_owner_revenue) || 0),
+    const totalGrossRevenue = guest.reduce(
+      (s, b) => s + (Number(b.gross_revenue) || 0),
       0
     );
+    let totalNetRevenue: number | null = null;
+    if (guest.length > 0) {
+      let allFeesKnown = true;
+      let netSum = 0;
+      for (const b of guest) {
+        const pid = String(b.property_id ?? "");
+        const pctRaw = pid ? pmFeePctByPropertyId.get(pid) : undefined;
+        if (pctRaw == null || Number.isNaN(Number(pctRaw))) {
+          allFeesKnown = false;
+          break;
+        }
+        const pct = Number(pctRaw);
+        const gross = Number(b.gross_revenue) || 0;
+        netSum += gross * (1 - pct / 100);
+      }
+      totalNetRevenue = allFeesKnown ? netSum : null;
+    }
     const totalNights = guest.reduce(
-      (s, b) => s + (Number(b.nights) || 0),
+      (s, b) =>
+        s + stayNightsFromCheckInOut(b.check_in, b.check_out),
       0
     );
     const avgNightly =
-      totalNights > 0 ? totalRevenue / totalNights : null;
+      totalNights > 0 ? totalGrossRevenue / totalNights : null;
     const ownerStays = filteredBookings.filter((b) => {
       const t = (b.block_type ?? "").trim().toLowerCase();
       return t === "owner_stay" || t === "owner_guest";
@@ -667,12 +719,13 @@ export default function DashboardPage() {
 
     return {
       totalGuestBookings,
-      totalRevenue,
+      totalGrossRevenue,
+      totalNetRevenue,
       totalNights,
       avgNightly,
       ownerStays,
     };
-  }, [filteredBookings]);
+  }, [filteredBookings, pmFeePctByPropertyId]);
 
   const performanceRevpar = useMemo(() => {
     const now = new Date();
@@ -707,7 +760,7 @@ export default function DashboardPage() {
       for (const m of months) {
         for (const b of guestBookings) {
           if (monthKeyFromCheckIn(b.check_in) === m.key) {
-            guestRevenue += Number(b.net_owner_revenue) || 0;
+            guestRevenue += Number(b.gross_revenue) || 0;
           }
         }
         let ownerNights = 0;
@@ -715,7 +768,7 @@ export default function DashboardPage() {
           ownerNights += countOwnerNightsInMonth(
             b.check_in,
             b.check_out,
-            Number(b.nights) || 0,
+            stayNightsFromCheckInOut(b.check_in, b.check_out),
             m.key
           );
         }
@@ -810,7 +863,7 @@ export default function DashboardPage() {
       let guestRevenue = 0;
       for (const b of guestBookings) {
         if (monthKeyFromCheckIn(b.check_in) === monthKey) {
-          guestRevenue += Number(b.net_owner_revenue) || 0;
+          guestRevenue += Number(b.gross_revenue) || 0;
         }
       }
 
@@ -819,7 +872,7 @@ export default function DashboardPage() {
         ownerNightsInMonth += countOwnerNightsInMonth(
           b.check_in,
           b.check_out,
-          Number(b.nights) || 0,
+          stayNightsFromCheckInOut(b.check_in, b.check_out),
           monthKey
         );
       }
@@ -1039,12 +1092,27 @@ export default function DashboardPage() {
             </div>
             <div className="rounded-lg bg-zinc-50 p-3 dark:bg-zinc-900/50">
               <dt className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                Net owner revenue
+                Gross revenue
               </dt>
               <dd className="mt-1 text-2xl font-semibold tabular-nums text-zinc-900 dark:text-zinc-50">
-                {formatMoney(bookingStats.totalRevenue)}
+                {formatMoney(bookingStats.totalGrossRevenue)}
               </dd>
-              <p className="mt-0.5 text-xs text-zinc-500">Guest bookings only</p>
+              <p className="mt-0.5 text-xs text-zinc-500">
+                Guest bookings only
+              </p>
+              {bookingStats.totalNetRevenue != null ? (
+                <>
+                  <dt className="mt-3 text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                    Net revenue
+                  </dt>
+                  <dd className="mt-1 text-lg font-semibold tabular-nums text-zinc-900 dark:text-zinc-50">
+                    {formatMoney(bookingStats.totalNetRevenue)}
+                  </dd>
+                  <p className="mt-0.5 text-xs text-zinc-500">
+                    After PM fee % (same stays)
+                  </p>
+                </>
+              ) : null}
             </div>
             <div className="rounded-lg bg-zinc-50 p-3 dark:bg-zinc-900/50">
               <dt className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
@@ -1056,7 +1124,7 @@ export default function DashboardPage() {
                   : "—"}
               </dd>
               <p className="mt-0.5 text-xs text-zinc-500">
-                Revenue ÷ nights (guest)
+                Gross ÷ nights (guest)
               </p>
             </div>
             <div className="rounded-lg bg-zinc-50 p-3 dark:bg-zinc-900/50">
