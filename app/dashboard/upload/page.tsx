@@ -604,6 +604,10 @@ export default function BookingsUploadPage() {
   }, [selectedPmId]);
 
   useEffect(() => {
+    console.log(
+      "[upload] pm_field_mappings fetch effect — selectedPmId:",
+      JSON.stringify(selectedPmId)
+    );
     if (!selectedPmId) {
       setPmFieldMapping(null);
       setMappingLoad("idle");
@@ -1136,6 +1140,13 @@ export default function BookingsUploadPage() {
       typeof pm.id === "string" ? pm.id : String(pm.id ?? "").trim();
     if (!id) return;
     setSelectedPmId(id);
+    console.log(
+      "[upload] selectPmOption — setSelectedPmId called with:",
+      "id:",
+      JSON.stringify(id),
+      "company_name:",
+      JSON.stringify(pm.company_name ?? "")
+    );
     setPmInputValue(pm.company_name ?? "");
     setPmDropdownOpen(false);
   }
