@@ -632,6 +632,23 @@ export default function BookingsUploadPage() {
         setMappingLoad("missing");
         return;
       }
+      const mappingRow = data as {
+        column_map?: Record<string, string | null> | null;
+        type_label_map?: Record<string, string> | null;
+        cancellation_signal_type?: string | null;
+      };
+      console.log(
+        "[upload] mapping fetch result:",
+        JSON.stringify(mappingRow)
+      );
+      console.log(
+        "[upload] column_map keys:",
+        Object.keys(mappingRow?.column_map ?? {})
+      );
+      console.log(
+        "[upload] resolveReservationIdHeader result:",
+        resolveReservationIdHeader(mappingRow?.column_map ?? {})
+      );
       setPmFieldMapping({
         column_map: data.column_map as Record<string, string | null>,
         type_label_map: data.type_label_map as Record<string, string>,
