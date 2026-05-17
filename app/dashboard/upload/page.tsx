@@ -604,10 +604,6 @@ export default function BookingsUploadPage() {
   }, [selectedPmId]);
 
   useEffect(() => {
-    console.log(
-      "[upload] pm_field_mappings fetch effect — selectedPmId:",
-      JSON.stringify(selectedPmId)
-    );
     if (!selectedPmId) {
       setPmFieldMapping(null);
       setMappingLoad("idle");
@@ -632,23 +628,6 @@ export default function BookingsUploadPage() {
         setMappingLoad("missing");
         return;
       }
-      const mappingRow = data as {
-        column_map?: Record<string, string | null> | null;
-        type_label_map?: Record<string, string> | null;
-        cancellation_signal_type?: string | null;
-      };
-      console.log(
-        "[upload] mapping fetch result:",
-        JSON.stringify(mappingRow)
-      );
-      console.log(
-        "[upload] column_map keys:",
-        Object.keys(mappingRow?.column_map ?? {})
-      );
-      console.log(
-        "[upload] resolveReservationIdHeader result:",
-        resolveReservationIdHeader(mappingRow?.column_map ?? {})
-      );
       setPmFieldMapping({
         column_map: data.column_map as Record<string, string | null>,
         type_label_map: data.type_label_map as Record<string, string>,
@@ -1100,7 +1079,7 @@ export default function BookingsUploadPage() {
         }))
       );
       if (ubErr) {
-        console.warn("[upload] upload_batches insert:", ubErr);
+        console.warn("upload_batches insert:", ubErr);
       }
     }
 
@@ -1157,13 +1136,6 @@ export default function BookingsUploadPage() {
       typeof pm.id === "string" ? pm.id : String(pm.id ?? "").trim();
     if (!id) return;
     setSelectedPmId(id);
-    console.log(
-      "[upload] selectPmOption — setSelectedPmId called with:",
-      "id:",
-      JSON.stringify(id),
-      "company_name:",
-      JSON.stringify(pm.company_name ?? "")
-    );
     setPmInputValue(pm.company_name ?? "");
     setPmDropdownOpen(false);
   }
