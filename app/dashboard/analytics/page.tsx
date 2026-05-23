@@ -365,6 +365,14 @@ export default function AnalyticsPage() {
           .eq("active", true),
       ]);
 
+    console.log(
+      "[analytics] properties loaded:",
+      propData?.map((p) => ({
+        id: p.id,
+        name: p.property_name,
+      })),
+    );
+
     setPropsLoading(false);
 
     const pmMap = new Map<string, string>();
@@ -466,6 +474,14 @@ export default function AnalyticsPage() {
       ]);
       if (cancel) return;
       setCovLoading(false);
+
+      const coverageData = covRes.data;
+      console.log(
+        "[analytics] coverage rows:",
+        coverageData,
+        "for property_id:",
+        selectedPropertyId,
+      );
 
       if (covRes.error) {
         console.error(covRes.error);
