@@ -719,6 +719,8 @@ export default function AnalyticsPage() {
     !benchmarkAvailable ||
     benchmarkRows.filter((r) => r.benchmark_revpar != null).length === 0;
 
+  const locksNow = coverageLocks[periodMode];
+
   /** Multi-PM heuristic: conflicting PM identifiers on overlapping bookings skipped for brevity. */
   const pmTransitionWarning = false;
 
