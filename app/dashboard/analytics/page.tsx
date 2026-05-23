@@ -365,14 +365,6 @@ export default function AnalyticsPage() {
           .eq("active", true),
       ]);
 
-    console.log(
-      "[analytics] properties loaded:",
-      propData?.map((p) => ({
-        id: p.id,
-        name: p.property_name,
-      })),
-    );
-
     setPropsLoading(false);
 
     const pmMap = new Map<string, string>();
@@ -474,14 +466,6 @@ export default function AnalyticsPage() {
       ]);
       if (cancel) return;
       setCovLoading(false);
-
-      const coverageData = covRes.data;
-      console.log(
-        "[analytics] coverage rows:",
-        coverageData,
-        "for property_id:",
-        selectedPropertyId,
-      );
 
       if (covRes.error) {
         console.error(covRes.error);
@@ -847,12 +831,7 @@ export default function AnalyticsPage() {
           Analytics
         </h1>
         <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-          KPI comparisons use completed calendar months after your statements
-          are marked complete (
-          <code className="rounded bg-zinc-100 px-1 dark:bg-zinc-800">
-            property_coverage_months
-          </code>
-          ).
+          KPI comparisons use completed months from your uploaded statements.
         </p>
       </div>
 
@@ -1022,7 +1001,7 @@ export default function AnalyticsPage() {
                   ) : null}
 
                   {showRevenueBars && locksNow?.priorComplete ? (
-                    <Bar dataKey="priorRev" name="Prior rev" fill="#a1a1aa55" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="priorRev" name="Prior rev" fill="#94a3b8" radius={[4, 4, 0, 0]} />
                   ) : null}
                   {showRevenueBars ? (
                     <Bar dataKey="currentRev" name="Current rev" fill="#059669aa" radius={[4, 4, 0, 0]} />
@@ -1031,7 +1010,7 @@ export default function AnalyticsPage() {
                       <Line type="monotone" dataKey="primary" name="Current" stroke="#18181b" strokeWidth={2} dot={false}
                         connectNulls
                       />
-                      <Line type="monotone" dataKey="prior" name="Prior" stroke="#a1a1aa" strokeWidth={2}
+                      <Line type="monotone" dataKey="prior" name="Prior" stroke="#94a3b8" strokeWidth={2}
                         strokeDasharray="6 5" dot={false} connectNulls
                       />
                       {!hideBenchmarkSeries &&
