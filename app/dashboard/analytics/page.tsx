@@ -1029,7 +1029,7 @@ export default function AnalyticsPage() {
                   )}
 
                   <Tooltip
-                    formatter={(v: number | undefined) =>
+                    formatter={(v) =>
                       typeof v === "number" ? v.toFixed(2) : "—"}
                   />
                   <Legend wrapperStyle={{ fontSize: "12px" }} />
