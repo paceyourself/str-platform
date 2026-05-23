@@ -25,6 +25,11 @@ const NAV_ITEMS: NavItem[] = [
     active: (p) => p.startsWith("/dashboard/upload"),
   },
   {
+    href: "/dashboard/analytics",
+    label: "Analytics",
+    active: (p) => p.startsWith("/dashboard/analytics"),
+  },
+  {
     href: "/dashboard/tickets",
     label: "Tickets",
     active: (p) => p.startsWith("/dashboard/tickets"),
@@ -50,6 +55,7 @@ function isMoreSpecificDashboard(path: string) {
   const prefixes = [
     "/dashboard/properties",
     "/dashboard/upload",
+    "/dashboard/analytics",
     "/dashboard/tickets",
     "/dashboard/surveys",
     "/dashboard/reviews",
