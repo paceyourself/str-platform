@@ -205,6 +205,29 @@ function calendarMonthsOverlappingStay(
   );
 }
 
+/** Inclusive calendar months from the month containing minDate through the month containing maxDate. */
+function calendarMonthsInclusiveInFileSpan(
+  minDate: Date,
+  maxDate: Date,
+): { coverage_year: number; coverage_month: number }[] {
+  const startY = minDate.getFullYear();
+  const startM = minDate.getMonth() + 1;
+  const endY = maxDate.getFullYear();
+  const endM = maxDate.getMonth() + 1;
+  const out: { coverage_year: number; coverage_month: number }[] = [];
+  let y = startY;
+  let m = startM;
+  while (y < endY || (y === endY && m <= endM)) {
+    out.push({ coverage_year: y, coverage_month: m });
+    m += 1;
+    if (m > 12) {
+      m = 1;
+      y += 1;
+    }
+  }
+  return out;
+}
+
 async function upsertPropertyCoverageMonthsFromUpload(
   supabase: SupabaseClient,
   args: {
@@ -223,12 +246,18 @@ async function upsertPropertyCoverageMonthsFromUpload(
     if (!pid || !bid) continue;
 
     const monthKey = new Set<string>();
+    let minCi: Date | null = null;
+    let maxCo: Date | null = null;
     for (const p of uniquePayloads) {
       if (String(p.property_id ?? "").trim() !== pid) continue;
-      for (const ym of calendarMonthsOverlappingStay(
-        p.check_in as string | undefined,
-        p.check_out as string | undefined,
-      )) {
+      const ci = parseDateOnlyLocal(String(p.check_in ?? ""));
+      const co = parseDateOnlyLocal(String(p.check_out ?? ""));
+      if (!ci || !co || !(co > ci)) continue;
+      if (!minCi || ci < minCi) minCi = ci;
+      if (!maxCo || co > maxCo) maxCo = co;
+    }
+    if (minCi && maxCo) {
+      for (const ym of calendarMonthsInclusiveInFileSpan(minCi, maxCo)) {
         monthKey.add(`${ym.coverage_year}-${ym.coverage_month}`);
       }
     }
