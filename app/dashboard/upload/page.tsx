@@ -1223,7 +1223,11 @@ export default function BookingsUploadPage() {
             owner_id: user.id,
             property_id,
             pm_id: selectedPmId,
-            source_file_id: sourceFileId,
+            source_filename: parsed.fileName,
+            status: "complete",
+            row_count: uniquePayloads.filter(
+              (p) => String(p.property_id ?? "").trim() === property_id,
+            ).length,
           })),
         )
         .select("id, property_id");
