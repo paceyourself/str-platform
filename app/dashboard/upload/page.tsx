@@ -234,10 +234,11 @@ async function upsertPropertyCoverageMonthsFromUpload(
     pmId: string;
     uniquePayloads: Record<string, unknown>[];
     uploadBatchRows: { id: string; property_id: string }[];
+    relStartDates: Record<string, string>;
   },
 ): Promise<{ error: string | null }> {
   const now = new Date();
-  const { pmId, uniquePayloads, uploadBatchRows } = args;
+  const { pmId, uniquePayloads, uploadBatchRows, relStartDates } = args;
   const allRows: Record<string, unknown>[] = [];
 
   for (const batch of uploadBatchRows) {
@@ -256,8 +257,23 @@ async function upsertPropertyCoverageMonthsFromUpload(
       if (!minCi || ci < minCi) minCi = ci;
       if (!maxCo || co > maxCo) maxCo = co;
     }
-    if (minCi && maxCo) {
-      for (const ym of calendarMonthsInclusiveInFileSpan(minCi, maxCo)) {
+
+    const relStartRaw =
+      pid in relStartDates ? String(relStartDates[pid] ?? "").trim() : "";
+    const relStartDt = relStartRaw ? parseDateOnlyLocal(relStartRaw) : null;
+    const windowStart = relStartDt ?? minCi;
+
+    console.log("[upload debug] coverage window inputs", {
+      property_id: pid,
+      relStartRaw,
+      relStartDt,
+      windowStart,
+    });
+
+    const windowEnd = maxCo;
+
+    if (windowStart && windowEnd && windowEnd > windowStart) {
+      for (const ym of calendarMonthsInclusiveInFileSpan(windowStart, windowEnd)) {
         monthKey.add(`${ym.coverage_year}-${ym.coverage_month}`);
       }
     }
@@ -1271,11 +1287,35 @@ export default function BookingsUploadPage() {
         importSideEffectError =
           "Bookings were saved, but the upload batch insert returned no rows (check RLS: can you SELECT rows you insert on upload_batches?). Analytics coverage was not updated.";
       } else {
+        const relStartDates: Record<string, string> = {};
+        const { data: relData } = await supabase
+          .from("owner_pm_relationships")
+          .select("start_date, property_id")
+          .in("property_id", distinctPropertyIds)
+          .eq("pm_id", selectedPmId)
+          .eq("active", true);
+
+        console.log(
+          "[upload debug] owner_pm_relationships raw relData:",
+          relData,
+        );
+
+        for (const row of relData ?? []) {
+          const rp = row as { property_id?: string; start_date?: string | null };
+          const rid = String(rp.property_id ?? "").trim();
+          const sd = rp.start_date;
+          if (!rid || sd == null || String(sd).trim() === "") continue;
+          relStartDates[rid] = String(sd).trim();
+        }
+
+        console.log("[upload debug] relStartDates map:", relStartDates);
+
         const { error: coverageErr } =
           await upsertPropertyCoverageMonthsFromUpload(supabase, {
             pmId: selectedPmId,
             uniquePayloads,
             uploadBatchRows: createdBatches as { id: string; property_id: string }[],
+            relStartDates,
           });
         if (coverageErr) {
           console.error("[upload] property_coverage_months upsert:", coverageErr);
