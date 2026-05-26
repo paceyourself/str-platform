@@ -263,13 +263,6 @@ async function upsertPropertyCoverageMonthsFromUpload(
     const relStartDt = relStartRaw ? parseDateOnlyLocal(relStartRaw) : null;
     const windowStart = relStartDt ?? minCi;
 
-    console.log("[upload debug] coverage window inputs", {
-      property_id: pid,
-      relStartRaw,
-      relStartDt,
-      windowStart,
-    });
-
     const windowEnd = maxCo;
 
     if (windowStart && windowEnd && windowEnd > windowStart) {
@@ -1295,11 +1288,6 @@ export default function BookingsUploadPage() {
           .eq("pm_id", selectedPmId)
           .eq("active", true);
 
-        console.log(
-          "[upload debug] owner_pm_relationships raw relData:",
-          relData,
-        );
-
         for (const row of relData ?? []) {
           const rp = row as { property_id?: string; start_date?: string | null };
           const rid = String(rp.property_id ?? "").trim();
@@ -1307,8 +1295,6 @@ export default function BookingsUploadPage() {
           if (!rid || sd == null || String(sd).trim() === "") continue;
           relStartDates[rid] = String(sd).trim();
         }
-
-        console.log("[upload debug] relStartDates map:", relStartDates);
 
         const { error: coverageErr } =
           await upsertPropertyCoverageMonthsFromUpload(supabase, {
