@@ -212,7 +212,7 @@ async function upsertPropertyCoverageMonthsFromUpload(
     uniquePayloads: Record<string, unknown>[];
     uploadBatchRows: { id: string; property_id: string }[];
   },
-): Promise<void> {
+): Promise<{ error: string | null }> {
   const now = new Date();
   const { pmId, uniquePayloads, uploadBatchRows } = args;
   const allRows: Record<string, unknown>[] = [];
@@ -257,6 +257,13 @@ async function upsertPropertyCoverageMonthsFromUpload(
     }
   }
 
+  if (allRows.length === 0) {
+    console.log(
+      "[property_coverage_months] upsert skipped — no calendar months derived from stays in this upload",
+    );
+    return { error: null };
+  }
+
   const chunkSize = 100;
   for (let i = 0; i < allRows.length; i += chunkSize) {
     const slice = allRows.slice(i, i + chunkSize);
@@ -264,9 +271,15 @@ async function upsertPropertyCoverageMonthsFromUpload(
       onConflict: "property_id,pm_id,coverage_year,coverage_month",
     });
     if (error) {
-      console.warn("[property_coverage_months] upsert:", error.message);
+      console.error("[property_coverage_months] upsert failed:", error);
+      return { error: error.message };
     }
   }
+
+  console.log("[property_coverage_months] upsert ok", {
+    rowCount: allRows.length,
+  });
+  return { error: null };
 }
 
 const BASE_BOOKING_KEYS = new Set([
@@ -1200,6 +1213,8 @@ export default function BookingsUploadPage() {
       }
     }
 
+    let importSideEffectError: string | null = null;
+
     if (distinctPropertyIds.length > 0) {
       const { data: createdBatches, error: ubErr } = await supabase
         .from("upload_batches")
@@ -1213,13 +1228,26 @@ export default function BookingsUploadPage() {
         )
         .select("id, property_id");
       if (ubErr) {
-        console.warn("upload_batches insert:", ubErr);
-      } else if (createdBatches && createdBatches.length > 0) {
-        await upsertPropertyCoverageMonthsFromUpload(supabase, {
-          pmId: selectedPmId,
-          uniquePayloads,
-          uploadBatchRows: createdBatches as { id: string; property_id: string }[],
-        });
+        console.error("[upload] upload_batches insert failed:", ubErr);
+        importSideEffectError = `Bookings were saved, but the upload batch could not be recorded (${ubErr.code ?? "error"}: ${ubErr.message}). Analytics coverage will not update until this succeeds.`;
+      } else if (!createdBatches?.length) {
+        console.error(
+          "[upload] upload_batches insert returned no rows; expected one per property in file.",
+          { expectedCount: distinctPropertyIds.length },
+        );
+        importSideEffectError =
+          "Bookings were saved, but the upload batch insert returned no rows (check RLS: can you SELECT rows you insert on upload_batches?). Analytics coverage was not updated.";
+      } else {
+        const { error: coverageErr } =
+          await upsertPropertyCoverageMonthsFromUpload(supabase, {
+            pmId: selectedPmId,
+            uniquePayloads,
+            uploadBatchRows: createdBatches as { id: string; property_id: string }[],
+          });
+        if (coverageErr) {
+          console.error("[upload] property_coverage_months upsert:", coverageErr);
+          importSideEffectError = `Upload batch was saved, but coverage months failed to update: ${coverageErr}`;
+        }
       }
     }
 
@@ -1243,6 +1271,9 @@ export default function BookingsUploadPage() {
       msg += ` ${rowsSkippedOther} row${rowsSkippedOther === 1 ? "" : "s"} skipped (missing reservation id or no PM link).`;
     }
     setStatus(msg);
+    if (importSideEffectError) {
+      setError(importSideEffectError);
+    }
   }
 
   function onClearPreview() {
