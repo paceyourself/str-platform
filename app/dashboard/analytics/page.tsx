@@ -155,10 +155,15 @@ function nightsIntersectCalendarMonthHalfOpenStay(
 ): number {
   const ci = parseDateMidday(checkInIso);
   const co = parseDateMidday(checkOutIso);
-  const { first, last } = boundsOfCalendarMonth(year, month);
+  const { first } = boundsOfCalendarMonth(year, month);
   const monthEndExclusive = new Date(year, month, 1, 12, 0, 0);
   if (!ci || !co) return 0;
   if (!(co > ci)) return 0;
+  /* Spec §3.7: check_in < month_end AND check_out > month_start (half-open stay). */
+  if (!(ci.getTime() < monthEndExclusive.getTime() && co.getTime() > first.getTime())) {
+    return 0;
+  }
+  /* overlap_days = LEAST(check_out, month_end) − GREATEST(check_in, month_start) */
   const overlapStart =
     ci.getTime() > first.getTime()
       ? new Date(ci.getFullYear(), ci.getMonth(), ci.getDate(), 12)
@@ -167,6 +172,27 @@ function nightsIntersectCalendarMonthHalfOpenStay(
     co.getTime() < monthEndExclusive.getTime() ? co : monthEndExclusive;
   if (!(overlapEndExclusive > overlapStart)) return 0;
   return Math.round((overlapEndExclusive.getTime() - overlapStart.getTime()) / 86400000);
+}
+
+function totalHalfOpenStayNights(
+  checkInIso: string | null,
+  checkOutIso: string | null,
+): number {
+  const ci = parseDateMidday(checkInIso);
+  const co = parseDateMidday(checkOutIso);
+  if (!ci || !co || !(co > ci)) return 0;
+  return Math.round((co.getTime() - ci.getTime()) / 86400000);
+}
+
+/** Closed-period analytics exclude guest rows with check_in on or after today. */
+function checkInStrictlyBeforeToday(
+  checkInIso: string | null,
+  now = new Date(),
+): boolean {
+  const ci = parseDateMidday(checkInIso);
+  if (!ci) return false;
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12, 0, 0);
+  return ci.getTime() < today.getTime();
 }
 
 function isoWeekMonday(isoWeekYear: number, isoWeek: number): Date {
@@ -601,24 +627,27 @@ export default function AnalyticsPage() {
           availDenominatorReduction: 0,
         };
 
-        const dim = daysInCalendarMonth(ym.year, ym.month);
-
         for (const b of propertyBookingsFiltered) {
           const bt = String(b.block_type ?? "").trim();
-          const n = nightsIntersectCalendarMonthHalfOpenStay(
+          const overlapDays = nightsIntersectCalendarMonthHalfOpenStay(
             b.check_in,
             b.check_out,
             ym.year,
             ym.month,
           );
-          if (n <= 0) continue;
+          if (overlapDays <= 0) continue;
+
           if (GUEST_BLOCK_TYPES.has(bt)) {
-            series[k].guestBookedNights += n;
-            series[k].guestRevenue +=
+            if (!checkInStrictlyBeforeToday(b.check_in)) continue;
+            const totalNights = totalHalfOpenStayNights(b.check_in, b.check_out);
+            if (totalNights <= 0) continue;
+            const gross =
               Number(b.gross_revenue != null ? b.gross_revenue : NaN) || 0;
+            series[k].guestBookedNights += overlapDays;
+            series[k].guestRevenue += (gross * overlapDays) / totalNights;
           }
           if (reducesAvailableDenominator(b, bt)) {
-            series[k].availDenominatorReduction += n;
+            series[k].availDenominatorReduction += overlapDays;
           }
         }
 
