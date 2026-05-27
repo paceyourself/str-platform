@@ -1101,15 +1101,13 @@ function BenchmarkMissingBanner() {
 
 function KpiExplanation({ active }: { active: KpiTab }) {
   const lines: Record<KpiTab, string> = {
-    revenue:
-      "Gross Revenue — SUM(guest gross_revenue) by month. PM forecast suppressed in Phase 1.",
+    revenue: "Monthly gross revenue from guest bookings.",
     revpar:
-      "RevPAR — guest gross_revenue ÷ Available Nights where Available = calendar nights minus owner / maintenance block nights per spec.",
-    occ:
-      "Occupancy % — booked guest nights ÷ Available Nights × 100.",
-    adr: "ADR — guest gross_revenue ÷ booked guest nights.",
+      "Revenue per available night — your property vs. the 30A market.",
+    occ: "Percentage of available nights booked by guests.",
+    adr: "Average nightly rate from guest bookings.",
     index:
-      "RevPAR Index — (property RevPAR ÷ benchmark RevPAR)×100 vs market baseline 100.",
+      "Your RevPAR as a percentage of the market benchmark. 100 = at market.",
   };
   return (
     <p className="text-xs text-zinc-600 dark:text-zinc-400">{lines[active]}</p>
