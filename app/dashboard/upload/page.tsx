@@ -684,6 +684,17 @@ export default function BookingsUploadPage() {
     "idle" | "loading" | "ready" | "missing" | "error"
   >("idle");
 
+  const [mappingRequestOpen, setMappingRequestOpen] = useState(false);
+  const [mappingRequestSubmitted, setMappingRequestSubmitted] = useState(false);
+  const [mappingRequestFile, setMappingRequestFile] =
+    useState<File | null>(null);
+  const [mappingRequestSubmitting, setMappingRequestSubmitting] =
+    useState(false);
+  const [mappingRequestError, setMappingRequestError] = useState<string | null>(
+    null,
+  );
+  const [mappingRequestFileKey, setMappingRequestFileKey] = useState(0);
+
   const nameLookup = useMemo(
     () => buildPropertyNameLookup(properties),
     [properties]
@@ -783,6 +794,11 @@ export default function BookingsUploadPage() {
     setParsed(null);
     setStatus(null);
     setFileInputKey((k) => k + 1);
+    setMappingRequestOpen(false);
+    setMappingRequestSubmitted(false);
+    setMappingRequestFile(null);
+    setMappingRequestError(null);
+    setMappingRequestFileKey((k) => k + 1);
   }, [selectedPmId]);
 
   useEffect(() => {
@@ -1370,6 +1386,134 @@ export default function BookingsUploadPage() {
     setPmDropdownOpen(false);
   }
 
+  async function onSubmitMappingRequest() {
+    if (!selectedPmId || mappingRequestSubmitting) return;
+
+    setMappingRequestSubmitting(true);
+    setMappingRequestError(null);
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) {
+      setMappingRequestSubmitting(false);
+      setMappingRequestError(
+        "Request could not be sent. Please email support@verostr.com.",
+      );
+      return;
+    }
+
+    const pmRecord = pmList.find((p) => p.id === selectedPmId);
+    const pmCompanyName = pmRecord?.company_name?.trim() || "PM";
+
+    const [{ data: ownerProfile }, { data: relRows }] = await Promise.all([
+      supabase
+        .from("owner_profiles")
+        .select("display_name")
+        .eq("id", user.id)
+        .maybeSingle(),
+      supabase
+        .from("owner_pm_relationships")
+        .select(
+          "property_id, properties ( property_name, address_line1 )",
+        )
+        .eq("owner_id", user.id)
+        .eq("pm_id", selectedPmId)
+        .eq("active", true),
+    ]);
+
+    type RelEmbed = {
+      property_id: string;
+      properties:
+        | { property_name: string | null; address_line1: string | null }
+        | { property_name: string | null; address_line1: string | null }[]
+        | null;
+    };
+
+    const linkedProperties = (relRows ?? []).map((row) => {
+      const r = row as RelEmbed;
+      const prop = Array.isArray(r.properties)
+        ? r.properties[0]
+        : r.properties;
+      const label =
+        prop?.property_name?.trim() ||
+        prop?.address_line1?.trim() ||
+        "Property";
+      return {
+        id: String(r.property_id ?? ""),
+        label,
+      };
+    });
+
+    const primaryProperty =
+      linkedProperties.find((p) => p.id) ??
+      (properties[0]
+        ? {
+            id: properties[0].id,
+            label:
+              properties[0].property_name?.trim() ||
+              properties[0].address_line1?.trim() ||
+              "Property",
+          }
+        : { id: "", label: "Property" });
+
+    const propertyNames =
+      linkedProperties.length > 0
+        ? linkedProperties.map((p) => p.label).join(", ")
+        : primaryProperty.label;
+
+    const ownerDisplayName =
+      ownerProfile?.display_name?.trim() || user.email || "Owner";
+
+    let attachmentPath: string | null = null;
+    if (mappingRequestFile) {
+      const timestamp = Date.now();
+      const safeName = mappingRequestFile.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+      const path = `pm-mapping-requests/${selectedPmId}/${timestamp}_${safeName}`;
+      const { error: uploadErr } = await supabase.storage
+        .from("attachments")
+        .upload(path, mappingRequestFile, { upsert: false });
+      if (uploadErr) {
+        console.error("[pm mapping request] storage upload:", uploadErr);
+      } else {
+        attachmentPath = path;
+      }
+    }
+
+    const body = `Owner ${ownerDisplayName} requested field mapping configuration for PM: ${pmCompanyName}. Property: ${propertyNames}.`;
+
+    const { error: notifyErr } = await supabase.from("notifications").insert({
+      recipient_user_id: null,
+      recipient_email: null,
+      notification_type: "pm_mapping_request",
+      title: "PM mapping configuration requested",
+      body,
+      metadata: {
+        pm_id: selectedPmId,
+        pm_name: pmCompanyName,
+        owner_id: user.id,
+        property_id: primaryProperty.id || null,
+        attachment_path: attachmentPath,
+      },
+      channel: "in_app",
+    });
+
+    setMappingRequestSubmitting(false);
+
+    if (notifyErr) {
+      console.error("[pm mapping request] notifications insert:", notifyErr);
+      setMappingRequestError(
+        "Request could not be sent. Please email support@verostr.com.",
+      );
+      return;
+    }
+
+    setMappingRequestSubmitted(true);
+    setMappingRequestOpen(false);
+    setMappingRequestFile(null);
+    setMappingRequestFileKey((k) => k + 1);
+  }
+
   return (
     <div className="max-w-2xl space-y-6">
       <div>
@@ -1454,12 +1598,100 @@ export default function BookingsUploadPage() {
       </div>
 
       {selectedPmId && mappingLoad === "missing" ? (
-        <div
-          role="alert"
-          className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-100"
-        >
-          No field mapping configured for this PM. Please contact an administrator.
-        </div>
+        mappingRequestSubmitted ? (
+          <div
+            role="status"
+            className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-950 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-100"
+          >
+            Configuration request sent. An administrator will set up your
+            PM&apos;s file format. You&apos;ll be able to upload once it&apos;s
+            configured.
+          </div>
+        ) : (
+          <div
+            role="alert"
+            className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-100"
+          >
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <p>
+                No field mapping configured for this PM. Please contact an
+                administrator.
+              </p>
+              {!mappingRequestOpen ? (
+                <button
+                  type="button"
+                  disabled={mappingRequestSubmitting}
+                  onClick={() => {
+                    setMappingRequestError(null);
+                    setMappingRequestOpen(true);
+                  }}
+                  className="shrink-0 rounded-lg border border-amber-400 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-amber-950 hover:bg-amber-100 disabled:opacity-50 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-100 dark:hover:bg-amber-900/50"
+                >
+                  Request configuration
+                </button>
+              ) : null}
+            </div>
+
+            {mappingRequestOpen ? (
+              <div className="mt-4 space-y-3 border-t border-amber-200/80 pt-4 dark:border-amber-800/60">
+                <div>
+                  <label
+                    htmlFor="pm-mapping-sample-csv"
+                    className="block text-xs font-medium text-amber-900 dark:text-amber-200"
+                  >
+                    Attach a sample CSV from your PM (optional but recommended).
+                  </label>
+                  <input
+                    key={mappingRequestFileKey}
+                    id="pm-mapping-sample-csv"
+                    type="file"
+                    accept=".csv,text/csv"
+                    disabled={mappingRequestSubmitting}
+                    onChange={(e) => {
+                      setMappingRequestFile(e.target.files?.[0] ?? null);
+                    }}
+                    className="mt-2 block w-full text-xs file:mr-3 file:rounded-md file:border-0 file:bg-amber-900 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white hover:file:bg-amber-800 dark:file:bg-amber-700"
+                  />
+                  {mappingRequestFile ? (
+                    <p className="mt-1 text-xs text-amber-800 dark:text-amber-300">
+                      Selected: {mappingRequestFile.name}
+                    </p>
+                  ) : null}
+                </div>
+
+                {mappingRequestError ? (
+                  <p className="text-xs font-medium text-red-700 dark:text-red-300">
+                    {mappingRequestError}
+                  </p>
+                ) : null}
+
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={mappingRequestSubmitting}
+                    onClick={onSubmitMappingRequest}
+                    className="rounded-lg bg-amber-900 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-white disabled:opacity-50 dark:bg-amber-700"
+                  >
+                    {mappingRequestSubmitting ? "Sending…" : "Submit request"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={mappingRequestSubmitting}
+                    onClick={() => {
+                      setMappingRequestOpen(false);
+                      setMappingRequestFile(null);
+                      setMappingRequestError(null);
+                      setMappingRequestFileKey((k) => k + 1);
+                    }}
+                    className="rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-wide text-amber-950 disabled:opacity-50 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-100"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        )
       ) : null}
       {selectedPmId && mappingLoad === "loading" ? (
         <p className="text-sm text-zinc-500 dark:text-zinc-400">
