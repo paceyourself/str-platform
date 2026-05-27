@@ -276,12 +276,18 @@ function prorateMonthToWeeklySeries(
   triple: { revpar: number; adr: number; occ: number },
 ): Map<
   string,
-  { isoYear: number; isoWeek: number; benchmark_revpar: number; benchmark_adr: number; occupancy: number }
+  {
+    isoYear: number;
+    isoWeek: number;
+    benchmark_revpar: number;
+    benchmark_adr: number;
+    occupancy_weighted: number;
+    occupancy_days: number;
+  }
 > {
   const dim = daysInCalendarMonth(year, month);
   const drRev = triple.revpar / dim;
   const drAdr = triple.adr / dim;
-  const drOcc = triple.occ / dim;
 
   const weekMap = new Map<
     string,
@@ -290,7 +296,8 @@ function prorateMonthToWeeklySeries(
       isoWeek: number;
       benchmark_revpar: number;
       benchmark_adr: number;
-      occupancy: number;
+      occupancy_weighted: number;
+      occupancy_days: number;
     }
   >();
 
@@ -305,13 +312,15 @@ function prorateMonthToWeeklySeries(
         isoWeek,
         benchmark_revpar: 0,
         benchmark_adr: 0,
-        occupancy: 0,
+        occupancy_weighted: 0,
+        occupancy_days: 0,
       };
       weekMap.set(key, cur);
     }
     cur.benchmark_revpar += drRev;
     cur.benchmark_adr += drAdr;
-    cur.occupancy += drOcc;
+    cur.occupancy_weighted += triple.occ;
+    cur.occupancy_days += 1;
   }
 
   return weekMap;
@@ -325,7 +334,8 @@ function mergeWeekMaps(into: Map<string, WeeklyRowAgg>, delta: Map<string, Weekl
     } else {
       cur.benchmark_revpar += row.benchmark_revpar;
       cur.benchmark_adr += row.benchmark_adr;
-      cur.occupancy += row.occupancy;
+      cur.occupancy_weighted += row.occupancy_weighted;
+      cur.occupancy_days += row.occupancy_days;
     }
   }
 }
@@ -335,7 +345,8 @@ type WeeklyRowAgg = {
   isoWeek: number;
   benchmark_revpar: number;
   benchmark_adr: number;
-  occupancy: number;
+  occupancy_weighted: number;
+  occupancy_days: number;
 };
 
 function parseYm(ym: string): { year: number; month: number } | null {
@@ -665,13 +676,17 @@ async function ingestMetricsModes(
 
   for (const [, row] of sortedWeekEntries) {
     if (!row) continue;
+    const occDays = row.occupancy_days;
     upsertBodies.push({
       market_id: cli.market.toLowerCase(),
       year: row.isoYear,
       week_number: row.isoWeek,
       benchmark_revpar: Math.round(row.benchmark_revpar * 100) / 100,
       benchmark_adr: Math.round(row.benchmark_adr * 100) / 100,
-      benchmark_occ: Math.round(row.occupancy * 100) / 100,
+      benchmark_occ:
+        occDays > 0
+          ? Math.round((row.occupancy_weighted / occDays) * 100) / 100
+          : 0,
       data_source: "airdna",
       granularity: "monthly_prorated",
       source: "airdna_api",
