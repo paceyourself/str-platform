@@ -347,18 +347,284 @@ function fiscalYearMonths(fullYear: number): CalendarMonth[] {
   return m;
 }
 
+type MonthMetrics = {
+  ymKey: string;
+  labelShort: string;
+  monthLabel: string;
+  grossRevenue: number;
+  availableNights: number;
+  guestBookedNights: number;
+  revparProp: number | null;
+  occPct: number | null;
+  adrProp: number | null;
+  benchmark_revpar: number | null;
+  benchmark_adr: number | null;
+  benchmark_occ: number | null;
+  indexValue: number | null;
+};
+
+type ViewLevel = "portfolio" | "market" | "pm" | "property";
+
+function formatMarketLabel(marketId: string, name?: string | null): string {
+  const n = (name ?? "").trim();
+  if (n) return n;
+  return marketId.toUpperCase();
+}
+
+function buildCoverageMap(rows: CoverageRow[]): Map<string, CoverageRow> {
+  const m = new Map<string, CoverageRow>();
+  for (const c of rows) {
+    m.set(monthKey(Number(c.coverage_year), Number(c.coverage_month)), c);
+  }
+  return m;
+}
+
+function coverageHoles(
+  covMap: Map<string, CoverageRow>,
+  months: CalendarMonth[],
+): CalendarMonth[] {
+  return months.filter((mk) => {
+    const r = covMap.get(monthKey(mk.year, mk.month));
+    return !(r?.data_complete || r?.admin_override);
+  });
+}
+
+function propertyPeriodComplete(
+  propertyId: string,
+  pmId: string,
+  months: CalendarMonth[],
+  allCoverage: CoverageRow[],
+): boolean {
+  const rows = allCoverage.filter(
+    (c) => c.property_id === propertyId && c.pm_id === pmId,
+  );
+  return coverageHoles(buildCoverageMap(rows), months).length === 0;
+}
+
+function computePropertyMonthMetrics(
+  bookingsForProperty: BookingRow[],
+  months: CalendarMonth[],
+  benchmarkRows: BenchmarkRow[],
+): MonthMetrics[] {
+  const series: Record<
+    string,
+    {
+      guestRevenue: number;
+      guestBookedNights: number;
+      availDenominatorReduction: number;
+    }
+  > = {};
+
+  for (const ym of months) {
+    const k = monthKey(ym.year, ym.month);
+    series[k] = {
+      guestRevenue: 0,
+      guestBookedNights: 0,
+      availDenominatorReduction: 0,
+    };
+
+    for (const b of bookingsForProperty) {
+      const bt = String(b.block_type ?? "").trim();
+      const overlapDays = nightsIntersectCalendarMonthHalfOpenStay(
+        b.check_in,
+        b.check_out,
+        ym.year,
+        ym.month,
+      );
+      if (overlapDays <= 0) continue;
+
+      if (GUEST_BLOCK_TYPES.has(bt)) {
+        if (!checkInStrictlyBeforeToday(b.check_in)) continue;
+        const totalNights = totalHalfOpenStayNights(b.check_in, b.check_out);
+        if (totalNights <= 0) continue;
+        const gross =
+          Number(b.gross_revenue != null ? b.gross_revenue : NaN) || 0;
+        series[k].guestBookedNights += overlapDays;
+        series[k].guestRevenue += (gross * overlapDays) / totalNights;
+      }
+      if (reducesAvailableDenominator(b, bt)) {
+        series[k].availDenominatorReduction += overlapDays;
+      }
+    }
+  }
+
+  for (const ym of months) {
+    const k = monthKey(ym.year, ym.month);
+    const dim = daysInCalendarMonth(ym.year, ym.month);
+    series[k].availDenominatorReduction = Math.min(
+      series[k].availDenominatorReduction,
+      dim,
+    );
+  }
+
+  return months.map((ym) => {
+    const k = monthKey(ym.year, ym.month);
+    const dim = daysInCalendarMonth(ym.year, ym.month);
+    const g = series[k];
+    const availableNights = Math.max(dim - g.availDenominatorReduction, 0);
+    const revparProp =
+      availableNights > 0 ? g.guestRevenue / availableNights : null;
+    const occPct =
+      availableNights > 0
+        ? (g.guestBookedNights / availableNights) * 100
+        : null;
+    const adr =
+      g.guestBookedNights > 0 ? g.guestRevenue / g.guestBookedNights : null;
+    const bm = sumBenchmarkMonthlyForMarket(benchmarkRows, ym);
+
+    const br = bm.benchmark_revpar;
+    const idx =
+      br !== null && br > 0 && revparProp != null
+        ? (revparProp / br) * 100
+        : null;
+
+    return {
+      ymKey: k,
+      labelShort: `${ym.year}-${String(ym.month).padStart(2, "0")}`,
+      monthLabel: `${String(ym.month).padStart(2, "0")}/${String(ym.year).slice(-2)}`,
+      grossRevenue: g.guestRevenue,
+      availableNights,
+      guestBookedNights: g.guestBookedNights,
+      revparProp,
+      occPct,
+      adrProp: adr,
+      benchmark_revpar: bm.benchmark_revpar,
+      benchmark_adr: bm.benchmark_adr,
+      benchmark_occ: bm.benchmark_occ,
+      indexValue: idx,
+    };
+  });
+}
+
+function aggregateMonthMetrics(
+  entries: { propertyId: string; marketId: string; metrics: MonthMetrics[] }[],
+  months: CalendarMonth[],
+  benchmarkByMarket: Map<string, BenchmarkRow[]>,
+  level: ViewLevel,
+  singleMarketId?: string,
+): MonthMetrics[] {
+  return months.map((ym, idx) => {
+    const k = monthKey(ym.year, ym.month);
+    let grossRevenue = 0;
+    let availableNights = 0;
+    let guestBookedNights = 0;
+
+    const availByMarket = new Map<string, number>();
+
+    for (const entry of entries) {
+      const row = entry.metrics[idx];
+      if (!row) continue;
+      grossRevenue += row.grossRevenue;
+      availableNights += row.availableNights;
+      guestBookedNights += row.guestBookedNights;
+      availByMarket.set(
+        entry.marketId,
+        (availByMarket.get(entry.marketId) ?? 0) + row.availableNights,
+      );
+    }
+
+    const revparProp =
+      availableNights > 0 ? grossRevenue / availableNights : null;
+    const occPct =
+      availableNights > 0
+        ? (guestBookedNights / availableNights) * 100
+        : null;
+    const adrProp =
+      guestBookedNights > 0 ? grossRevenue / guestBookedNights : null;
+
+    let benchmark_revpar: number | null = null;
+    let benchmark_adr: number | null = null;
+    let benchmark_occ: number | null = null;
+
+    if (level === "portfolio") {
+      let rWeighted = 0;
+      let rDays = 0;
+      let aWeighted = 0;
+      let aDays = 0;
+      let oWeighted = 0;
+      let oDays = 0;
+      for (const [mid, avail] of availByMarket) {
+        if (avail <= 0) continue;
+        const bm = sumBenchmarkMonthlyForMarket(
+          benchmarkByMarket.get(mid) ?? [],
+          ym,
+        );
+        if (bm.benchmark_revpar != null) {
+          rWeighted += bm.benchmark_revpar * avail;
+          rDays += avail;
+        }
+        if (bm.benchmark_adr != null) {
+          aWeighted += bm.benchmark_adr * avail;
+          aDays += avail;
+        }
+        if (bm.benchmark_occ != null) {
+          oWeighted += bm.benchmark_occ * avail;
+          oDays += avail;
+        }
+      }
+      benchmark_revpar = rDays > 0 ? rWeighted / rDays : null;
+      benchmark_adr = aDays > 0 ? aWeighted / aDays : null;
+      benchmark_occ = oDays > 0 ? oWeighted / oDays : null;
+    } else {
+      const mid =
+        singleMarketId ?? entries[0]?.marketId ?? "";
+      const bm = sumBenchmarkMonthlyForMarket(
+        benchmarkByMarket.get(mid) ?? [],
+        ym,
+      );
+      benchmark_revpar = bm.benchmark_revpar;
+      benchmark_adr = bm.benchmark_adr;
+      benchmark_occ = bm.benchmark_occ;
+    }
+
+    const indexValue =
+      benchmark_revpar != null &&
+      benchmark_revpar > 0 &&
+      revparProp != null
+        ? (revparProp / benchmark_revpar) * 100
+        : null;
+
+    return {
+      ymKey: k,
+      labelShort: `${ym.year}-${String(ym.month).padStart(2, "0")}`,
+      monthLabel: `${String(ym.month).padStart(2, "0")}/${String(ym.year).slice(-2)}`,
+      grossRevenue,
+      availableNights,
+      guestBookedNights,
+      revparProp,
+      occPct,
+      adrProp,
+      benchmark_revpar,
+      benchmark_adr,
+      benchmark_occ,
+      indexValue,
+    };
+  });
+}
+
 type KpiTab = "revenue" | "revpar" | "occ" | "adr" | "index";
 
 export default function AnalyticsPage() {
   const supabase = useMemo(() => createClient(), []);
   const [propsLoading, setPropsLoading] = useState(true);
   const [properties, setProperties] = useState<PropertyRow[]>([]);
-  const [selectedPropertyId, setSelectedPropertyId] = useState<string>("");
+  const [viewLevel, setViewLevel] = useState<ViewLevel>("portfolio");
+  const [selectedMarketId, setSelectedMarketId] = useState("");
+  const [selectedPmIdView, setSelectedPmIdView] = useState("");
+  const [selectedPropertyId, setSelectedPropertyId] = useState("");
   const [bookingsLoading, setBookingsLoading] = useState(false);
   const [bookings, setBookings] = useState<BookingRow[]>([]);
   const [covLoading, setCovLoading] = useState(false);
   const [coverage, setCoverage] = useState<CoverageRow[]>([]);
-  const [benchmarkRows, setBenchmarkRows] = useState<BenchmarkRow[]>([]);
+  const [benchmarkByMarket, setBenchmarkByMarket] = useState<
+    Map<string, BenchmarkRow[]>
+  >(() => new Map());
+  const [marketLabels, setMarketLabels] = useState<Map<string, string>>(
+    () => new Map(),
+  );
+  const [pmLabels, setPmLabels] = useState<Map<string, string>>(
+    () => new Map(),
+  );
   const [pmByProperty, setPmByProperty] = useState<Map<string, string>>(
     () => new Map(),
   );
@@ -388,6 +654,7 @@ export default function AnalyticsPage() {
         supabase
           .from("owner_pm_relationships")
           .select("property_id, pm_id, start_date")
+          .eq("owner_id", user.id)
           .eq("active", true),
       ]);
 
@@ -415,8 +682,7 @@ export default function AnalyticsPage() {
     setSelectedPropertyId((cur) => {
       if (!list.length) return "";
       const keep = cur && list.some((p) => p.id === cur);
-      if (keep) return cur!;
-      return list.length === 1 ? list[0].id : "";
+      return keep ? cur! : "";
     });
 
     if (re) console.error(re);
@@ -455,40 +721,119 @@ export default function AnalyticsPage() {
     };
   }, [properties, supabase]);
 
-  const selectedProperty = useMemo(
-    () => properties.find((p) => p.id === selectedPropertyId) ?? null,
-    [properties, selectedPropertyId],
-  );
+  const scopedProperties = useMemo(() => {
+    if (viewLevel === "portfolio") return properties;
+    if (viewLevel === "market") {
+      return properties.filter(
+        (p) => (p.market_id ?? "").trim() === selectedMarketId,
+      );
+    }
+    if (viewLevel === "pm") {
+      return properties.filter(
+        (p) =>
+          (p.market_id ?? "").trim() === selectedMarketId &&
+          pmByProperty.get(p.id) === selectedPmIdView,
+      );
+    }
+    const p = properties.find((x) => x.id === selectedPropertyId);
+    return p ? [p] : [];
+  }, [
+    properties,
+    viewLevel,
+    selectedMarketId,
+    selectedPmIdView,
+    selectedPropertyId,
+    pmByProperty,
+  ]);
 
-  const activePmId = selectedProperty?.id
-    ? pmByProperty.get(selectedProperty.id) ?? ""
-    : "";
+  const hierarchyMarkets = useMemo(() => {
+    const ids = [
+      ...new Set(
+        properties.map((p) => (p.market_id ?? "").trim()).filter(Boolean),
+      ),
+    ].sort();
+    return ids.map((id) => ({
+      id,
+      label: formatMarketLabel(id, marketLabels.get(id)),
+    }));
+  }, [properties, marketLabels]);
 
-  const marketId = (selectedProperty?.market_id ?? "").trim();
+  const hierarchyPmsForMarket = useMemo(() => {
+    if (!selectedMarketId) return [];
+    const pmIds = [
+      ...new Set(
+        properties
+          .filter((p) => (p.market_id ?? "").trim() === selectedMarketId)
+          .map((p) => pmByProperty.get(p.id))
+          .filter(Boolean) as string[],
+      ),
+    ].sort((a, b) =>
+      (pmLabels.get(a) ?? a).localeCompare(pmLabels.get(b) ?? b),
+    );
+    return pmIds.map((id) => ({
+      id,
+      label: pmLabels.get(id) ?? id.slice(0, 8),
+    }));
+  }, [properties, selectedMarketId, pmByProperty, pmLabels]);
+
+  const hierarchyPropertiesForPm = useMemo(() => {
+    if (!selectedMarketId || !selectedPmIdView) return [];
+    return properties.filter(
+      (p) =>
+        (p.market_id ?? "").trim() === selectedMarketId &&
+        pmByProperty.get(p.id) === selectedPmIdView,
+    );
+  }, [properties, selectedMarketId, selectedPmIdView, pmByProperty]);
 
   useEffect(() => {
     let cancel = false;
     (async () => {
-      if (!selectedPropertyId || !marketId || !activePmId) {
+      if (!properties.length) {
         setCoverage([]);
-        setBenchmarkRows([]);
+        setBenchmarkByMarket(new Map());
+        setMarketLabels(new Map());
+        setPmLabels(new Map());
         return;
       }
+      const propertyIds = properties.map((p) => p.id);
+      const marketIds = [
+        ...new Set(
+          properties.map((p) => (p.market_id ?? "").trim()).filter(Boolean),
+        ),
+      ];
+      const pmIds = [
+        ...new Set(
+          [...pmByProperty.values()].filter(Boolean),
+        ),
+      ];
+
       setCovLoading(true);
-      const [covRes, bmRes] = await Promise.all([
+      const [covRes, bmRes, marketRes, pmRes] = await Promise.all([
         supabase
           .from("property_coverage_months")
           .select(
             "property_id, pm_id, coverage_year, coverage_month, data_complete, admin_override",
           )
-          .eq("property_id", selectedPropertyId)
-          .eq("pm_id", activePmId),
-        supabase
-          .from("market_benchmarks")
-          .select("year, week_number, benchmark_revpar, benchmark_adr, benchmark_occ")
-          .eq("market_id", marketId)
-          .eq("source", "airdna_api")
-          .eq("granularity", "monthly_prorated"),
+          .in("property_id", propertyIds),
+        marketIds.length
+          ? supabase
+              .from("market_benchmarks")
+              .select(
+                "market_id, year, week_number, benchmark_revpar, benchmark_adr, benchmark_occ",
+              )
+              .in("market_id", marketIds)
+              .eq("source", "airdna_api")
+              .eq("granularity", "monthly_prorated")
+          : Promise.resolve({ data: [], error: null }),
+        marketIds.length
+          ? supabase.from("markets").select("id, name").in("id", marketIds)
+          : Promise.resolve({ data: [], error: null }),
+        pmIds.length
+          ? supabase
+              .from("pm_profiles")
+              .select("id, company_name")
+              .in("id", pmIds)
+          : Promise.resolve({ data: [], error: null }),
       ]);
       if (cancel) return;
       setCovLoading(false);
@@ -502,26 +847,46 @@ export default function AnalyticsPage() {
 
       if (bmRes.error) {
         console.error(bmRes.error);
-        setBenchmarkRows([]);
+        setBenchmarkByMarket(new Map());
       } else {
-        setBenchmarkRows((bmRes.data as BenchmarkRow[]) ?? []);
+        const bmMap = new Map<string, BenchmarkRow[]>();
+        for (const row of (bmRes.data ?? []) as (BenchmarkRow & {
+          market_id?: string;
+        })[]) {
+          const mid = String(row.market_id ?? "").trim();
+          if (!mid) continue;
+          const list = bmMap.get(mid) ?? [];
+          list.push(row);
+          bmMap.set(mid, list);
+        }
+        setBenchmarkByMarket(bmMap);
+      }
+
+      if (!marketRes.error && marketRes.data) {
+        const ml = new Map<string, string>();
+        for (const row of marketRes.data as { id: string; name?: string | null }[]) {
+          ml.set(row.id, row.name ?? "");
+        }
+        setMarketLabels(ml);
+      }
+
+      if (!pmRes.error && pmRes.data) {
+        const pl = new Map<string, string>();
+        for (const row of pmRes.data as {
+          id: string;
+          company_name?: string | null;
+        }[]) {
+          pl.set(row.id, row.company_name ?? "");
+        }
+        setPmLabels(pl);
       }
     })();
     return () => {
       cancel = true;
     };
-  }, [supabase, selectedPropertyId, activePmId, marketId]);
+  }, [properties, pmByProperty, supabase]);
 
   const lcm = useMemo(() => lastCompletedCalendarMonth(), []);
-
-  const covMap = useMemo(() => {
-    const m = new Map<string, CoverageRow>();
-    for (const c of coverage) {
-      const k = monthKey(Number(c.coverage_year), Number(c.coverage_month));
-      m.set(k, c);
-    }
-    return m;
-  }, [coverage]);
 
   const periodWindows = useMemo(() => {
     const qw = buildQuarterWindows(lcm);
@@ -535,232 +900,312 @@ export default function AnalyticsPage() {
     } as Record<PeriodMode, { curr: CalendarMonth[]; prior: CalendarMonth[] }>;
   }, [lcm]);
 
-  const coverageLocks = useMemo(() => {
+  const bookingsByProperty = useMemo(() => {
+    const m = new Map<string, BookingRow[]>();
+    for (const b of bookings) {
+      if (String(b.status ?? "").toLowerCase() === "cancelled") continue;
+      const pid = String(b.property_id ?? "");
+      if (!pid) continue;
+      const list = m.get(pid) ?? [];
+      list.push(b);
+      m.set(pid, list);
+    }
+    return m;
+  }, [bookings]);
+
+  const coverageInclusionByMode = useMemo(() => {
     type Rec = {
-      currComplete: boolean;
-      priorComplete: boolean;
+      currIncluded: number;
+      priorIncluded: number;
+      total: number;
+      currInsufficient: number;
       incompleteMonthsCurr: CalendarMonth[];
       incompleteMonthsPrior: CalendarMonth[];
     };
     const out: Record<PeriodMode, Rec> = {
       qtr: {
-        currComplete: false,
-        priorComplete: false,
+        currIncluded: 0,
+        priorIncluded: 0,
+        total: 0,
+        currInsufficient: 0,
         incompleteMonthsCurr: [],
         incompleteMonthsPrior: [],
       },
       ltm: {
-        currComplete: false,
-        priorComplete: false,
+        currIncluded: 0,
+        priorIncluded: 0,
+        total: 0,
+        currInsufficient: 0,
         incompleteMonthsCurr: [],
         incompleteMonthsPrior: [],
       },
       lfy: {
-        currComplete: false,
-        priorComplete: false,
+        currIncluded: 0,
+        priorIncluded: 0,
+        total: 0,
+        currInsufficient: 0,
         incompleteMonthsCurr: [],
         incompleteMonthsPrior: [],
       },
     };
-    const modes: PeriodMode[] = ["qtr", "ltm", "lfy"];
 
-    function holes(months: CalendarMonth[]): CalendarMonth[] {
-      return months.filter((mk) => {
-        const r = covMap.get(monthKey(mk.year, mk.month));
-        return !(r?.data_complete || r?.admin_override);
-      });
-    }
-
-    for (const mode of modes) {
+    for (const mode of ["qtr", "ltm", "lfy"] as PeriodMode[]) {
       const { curr, prior } = periodWindows[mode];
-      const hC = holes(curr);
-      const hP = holes(prior);
+      const total = scopedProperties.length;
+      let currIncluded = 0;
+      let priorIncluded = 0;
+
+      for (const p of scopedProperties) {
+        const pmId = pmByProperty.get(p.id) ?? "";
+        if (!pmId) continue;
+        if (propertyPeriodComplete(p.id, pmId, curr, coverage)) currIncluded++;
+        if (propertyPeriodComplete(p.id, pmId, prior, coverage)) priorIncluded++;
+      }
+
+      const unionCovRows: CoverageRow[] = [];
+      for (const p of scopedProperties) {
+        const pmId = pmByProperty.get(p.id) ?? "";
+        if (!pmId) continue;
+        unionCovRows.push(
+          ...coverage.filter(
+            (c) => c.property_id === p.id && c.pm_id === pmId,
+          ),
+        );
+      }
+      const unionMap = buildCoverageMap(unionCovRows);
+
       out[mode] = {
-        currComplete: hC.length === 0,
-        priorComplete: hP.length === 0,
-        incompleteMonthsCurr: hC,
-        incompleteMonthsPrior: hP,
+        currIncluded,
+        priorIncluded,
+        total,
+        currInsufficient: total - currIncluded,
+        incompleteMonthsCurr: coverageHoles(unionMap, curr),
+        incompleteMonthsPrior: coverageHoles(unionMap, prior),
       };
     }
 
     return out;
-  }, [covMap, periodWindows]);
+  }, [scopedProperties, coverage, periodWindows, pmByProperty]);
+
+  const computeScopedMetrics = useCallback(
+    (months: CalendarMonth[]) => {
+      const entries: {
+        propertyId: string;
+        marketId: string;
+        metrics: MonthMetrics[];
+      }[] = [];
+
+      for (const p of scopedProperties) {
+        const pmId = pmByProperty.get(p.id) ?? "";
+        if (!pmId) continue;
+        if (!propertyPeriodComplete(p.id, pmId, months, coverage)) continue;
+
+        const marketId = (p.market_id ?? "").trim();
+        const propBookings = bookingsByProperty.get(p.id) ?? [];
+        const bmRows = benchmarkByMarket.get(marketId) ?? [];
+        const metrics = computePropertyMonthMetrics(
+          propBookings,
+          months,
+          bmRows,
+        );
+        entries.push({ propertyId: p.id, marketId, metrics });
+      }
+
+      const included = entries.length;
+      const total = scopedProperties.length;
+      const insufficient = total - included;
+
+      if (included === 0) {
+        const empty = months.map((ym) => {
+          const k = monthKey(ym.year, ym.month);
+          return {
+            ymKey: k,
+            labelShort: `${ym.year}-${String(ym.month).padStart(2, "0")}`,
+            monthLabel: `${String(ym.month).padStart(2, "0")}/${String(ym.year).slice(-2)}`,
+            grossRevenue: 0,
+            availableNights: 0,
+            guestBookedNights: 0,
+            revparProp: null,
+            occPct: null,
+            adrProp: null,
+            benchmark_revpar: null,
+            benchmark_adr: null,
+            benchmark_occ: null,
+            indexValue: null,
+          };
+        });
+        return { series: empty, included, total, insufficient };
+      }
+
+      if (viewLevel === "property" && entries.length === 1) {
+        return {
+          series: entries[0].metrics,
+          included,
+          total,
+          insufficient,
+        };
+      }
+
+      const singleMarketId =
+        viewLevel === "market" || viewLevel === "pm"
+          ? selectedMarketId
+          : undefined;
+
+      return {
+        series: aggregateMonthMetrics(
+          entries,
+          months,
+          benchmarkByMarket,
+          viewLevel,
+          singleMarketId,
+        ),
+        included,
+        total,
+        insufficient,
+      };
+    },
+    [
+      scopedProperties,
+      pmByProperty,
+      coverage,
+      bookingsByProperty,
+      benchmarkByMarket,
+      viewLevel,
+      selectedMarketId,
+    ],
+  );
 
   useEffect(() => {
     periodDefaultedRef.current = false;
-  }, [selectedPropertyId]);
+  }, [viewLevel, selectedMarketId, selectedPmIdView, selectedPropertyId]);
 
   useEffect(() => {
-    if (!selectedPropertyId || covLoading) return;
+    if (covLoading || !scopedProperties.length) return;
     if (periodDefaultedRef.current) return;
     periodDefaultedRef.current = true;
     const order: PeriodMode[] = ["qtr", "ltm", "lfy"];
-    const ok = order.find((m) => coverageLocks[m]?.currComplete);
+    const ok = order.find((m) => coverageInclusionByMode[m].currIncluded > 0);
     if (ok) setPeriodMode(ok);
-  }, [selectedPropertyId, covLoading, coverageLocks]);
+  }, [
+    viewLevel,
+    selectedMarketId,
+    selectedPmIdView,
+    selectedPropertyId,
+    covLoading,
+    coverageInclusionByMode,
+    scopedProperties.length,
+  ]);
 
-  const propertyBookingsFiltered = useMemo(() => {
-    if (!selectedPropertyId) return [];
-    return bookings.filter(
-      (b) =>
-        String(b.property_id) === selectedPropertyId &&
-        String(b.status ?? "").toLowerCase() !== "cancelled",
-    );
-  }, [bookings, selectedPropertyId]);
+  useEffect(() => {
+    if (viewLevel === "market" && !selectedMarketId && hierarchyMarkets.length) {
+      setSelectedMarketId(hierarchyMarkets[0].id);
+    }
+  }, [viewLevel, selectedMarketId, hierarchyMarkets]);
 
-  const metricsByMonthPack = useCallback(
-    (months: CalendarMonth[]) => {
-      const series: Record<
-        string,
-        {
-          guestRevenue: number;
-          guestBookedNights: number;
-          availDenominatorReduction: number;
-        }
-      > = {};
+  useEffect(() => {
+    if (
+      (viewLevel === "pm" || viewLevel === "property") &&
+      selectedMarketId &&
+      !selectedPmIdView &&
+      hierarchyPmsForMarket.length
+    ) {
+      setSelectedPmIdView(hierarchyPmsForMarket[0].id);
+    }
+  }, [viewLevel, selectedMarketId, selectedPmIdView, hierarchyPmsForMarket]);
 
-      for (const ym of months) {
-        const k = monthKey(ym.year, ym.month);
-        series[k] = {
-          guestRevenue: 0,
-          guestBookedNights: 0,
-          availDenominatorReduction: 0,
-        };
+  useEffect(() => {
+    if (
+      viewLevel === "property" &&
+      selectedMarketId &&
+      selectedPmIdView &&
+      !selectedPropertyId &&
+      hierarchyPropertiesForPm.length
+    ) {
+      setSelectedPropertyId(hierarchyPropertiesForPm[0].id);
+    }
+  }, [
+    viewLevel,
+    selectedMarketId,
+    selectedPmIdView,
+    selectedPropertyId,
+    hierarchyPropertiesForPm,
+  ]);
 
-        for (const b of propertyBookingsFiltered) {
-          const bt = String(b.block_type ?? "").trim();
-          const overlapDays = nightsIntersectCalendarMonthHalfOpenStay(
-            b.check_in,
-            b.check_out,
-            ym.year,
-            ym.month,
-          );
-          if (overlapDays <= 0) continue;
-
-          if (GUEST_BLOCK_TYPES.has(bt)) {
-            if (!checkInStrictlyBeforeToday(b.check_in)) continue;
-            const totalNights = totalHalfOpenStayNights(b.check_in, b.check_out);
-            if (totalNights <= 0) continue;
-            const gross =
-              Number(b.gross_revenue != null ? b.gross_revenue : NaN) || 0;
-            series[k].guestBookedNights += overlapDays;
-            series[k].guestRevenue += (gross * overlapDays) / totalNights;
-          }
-          if (reducesAvailableDenominator(b, bt)) {
-            series[k].availDenominatorReduction += overlapDays;
-          }
-        }
-
-      }
-
-      for (const ym of months) {
-        const k = monthKey(ym.year, ym.month);
-        const dim = daysInCalendarMonth(ym.year, ym.month);
-        series[k].availDenominatorReduction = Math.min(
-          series[k].availDenominatorReduction,
-          dim,
-        );
-      }
-
-      return months.map((ym) => {
-        const k = monthKey(ym.year, ym.month);
-        const dim = daysInCalendarMonth(ym.year, ym.month);
-        const g = series[k];
-        const availableNights = Math.max(dim - g.availDenominatorReduction, 0);
-        const revparProp =
-          availableNights > 0 ? g.guestRevenue / availableNights : null;
-        const occPct =
-          availableNights > 0
-            ? (g.guestBookedNights / availableNights) * 100
-            : null;
-        const adr =
-          g.guestBookedNights > 0 ? g.guestRevenue / g.guestBookedNights : null;
-        const bm = sumBenchmarkMonthlyForMarket(benchmarkRows, ym);
-        let revbarM: number | null = null,
-          adrM: number | null = null,
-          occM: number | null = null,
-          idx: number | null = null;
-
-        const br = bm.benchmark_revpar;
-        const ba = bm.benchmark_adr;
-        const bo = bm.benchmark_occ;
-
-        if (br !== null && br > 0 && revparProp != null) idx = (revparProp / br) * 100;
-
-        revbarM = br;
-        adrM = ba;
-        occM = bo;
-
-        const labelShort = `${ym.year}-${String(ym.month).padStart(2, "0")}`;
-
-        return {
-          ymKey: k,
-          labelShort,
-          monthLabel: `${String(ym.month).padStart(2, "0")}/${String(ym.year).slice(-2)}`,
-          grossRevenue: g.guestRevenue,
-          availableNights,
-          guestBookedNights: g.guestBookedNights,
-          revparProp,
-          occPct,
-          adrProp: adr,
-          benchmark_revpar: revbarM,
-          benchmark_adr: adrM,
-          benchmark_occ: occM,
-          indexValue: idx,
-        };
-      });
-    },
-    [propertyBookingsFiltered, benchmarkRows],
-  );
-
-  const { currCombined, benchmarkAvailable } = useMemo(() => {
-    const modeUsed = periodMode;
-    const { curr, prior } = periodWindows[modeUsed];
-    const curS = metricsByMonthPack(curr);
-    const priS = metricsByMonthPack(prior);
-    const bmAvail = benchmarkRows.some(
-      (r) =>
-        r.benchmark_revpar != null &&
-        Number.isFinite(Number(r.benchmark_revpar)),
-    );
+  const periodPack = useMemo(() => {
+    const { curr, prior } = periodWindows[periodMode];
+    const curPack = computeScopedMetrics(curr);
+    const priPack = computeScopedMetrics(prior);
 
     const rows = curr.map((ym, idx) => {
       const ck = monthKey(ym.year, ym.month);
-      const c = curS.find((x) => x.ymKey === ck) ?? null;
+      const c = curPack.series.find((x) => x.ymKey === ck) ?? null;
       const pk = prior[idx]
         ? monthKey(prior[idx].year, prior[idx].month)
         : null;
       const p =
-        pk == null ? null : priS.find((x) => x.ymKey === pk) ?? null;
+        pk == null ? null : priPack.series.find((x) => x.ymKey === pk) ?? null;
 
       return {
-        label: curS[idx]?.monthLabel ?? monthKey(ym.year, ym.month),
+        label: curPack.series[idx]?.monthLabel ?? monthKey(ym.year, ym.month),
         ymKey: ck,
         current: c,
         prior: p,
       };
     });
 
-    return { currCombined: rows, benchmarkAvailable: bmAvail };
-  }, [periodMode, metricsByMonthPack, periodWindows, benchmarkRows]);
+    return {
+      currCombined: rows,
+      currIncluded: curPack.included,
+      currTotal: curPack.total,
+      currInsufficient: curPack.insufficient,
+      priorIncluded: priPack.included,
+    };
+  }, [periodMode, periodWindows, computeScopedMetrics]);
 
-  const hideBenchmarkSeries =
-    !benchmarkAvailable ||
-    benchmarkRows.filter((r) => r.benchmark_revpar != null).length === 0;
+  const { currCombined, currIncluded, currTotal, currInsufficient } =
+    periodPack;
 
-  const locksNow = coverageLocks[periodMode];
+  const benchmarkAvailable = useMemo(() => {
+    const marketIds = new Set<string>();
+    for (const p of scopedProperties) {
+      const mid = (p.market_id ?? "").trim();
+      if (mid) marketIds.add(mid);
+    }
+    for (const mid of marketIds) {
+      const rows = benchmarkByMarket.get(mid) ?? [];
+      if (
+        rows.some(
+          (r) =>
+            r.benchmark_revpar != null &&
+            Number.isFinite(Number(r.benchmark_revpar)),
+        )
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }, [scopedProperties, benchmarkByMarket]);
 
-  /** Multi-PM heuristic: conflicting PM identifiers on overlapping bookings skipped for brevity. */
+  const hideBenchmarkSeries = !benchmarkAvailable;
+
+  const inclusionNow = coverageInclusionByMode[periodMode];
+  const locksNow = {
+    currComplete: inclusionNow.currIncluded > 0,
+    priorComplete: inclusionNow.priorIncluded > 0,
+    incompleteMonthsCurr: inclusionNow.incompleteMonthsCurr,
+    incompleteMonthsPrior: inclusionNow.incompleteMonthsPrior,
+  };
+
   const pmTransitionWarning = false;
 
   const toggleDisabled = (
     mode: PeriodMode,
   ): { locked: boolean; tooltip: string } => {
-    const L = coverageLocks[mode];
-    if (!selectedProperty || !activePmId) {
-      return { locked: true, tooltip: "Select a property." };
+    const L = coverageInclusionByMode[mode];
+    if (!scopedProperties.length) {
+      return { locked: true, tooltip: "No properties in this view." };
     }
-    if (!L.currComplete) {
+    if (L.currIncluded === 0) {
       const m = L.incompleteMonthsCurr[0];
       return {
         locked: true,
@@ -774,6 +1219,51 @@ export default function AnalyticsPage() {
       tooltip: "",
     };
   };
+
+  const viewScopeLabel = useMemo(() => {
+    if (viewLevel === "portfolio") return "Portfolio";
+    if (viewLevel === "market") {
+      return formatMarketLabel(
+        selectedMarketId,
+        marketLabels.get(selectedMarketId),
+      );
+    }
+    if (viewLevel === "pm") {
+      const pm = pmLabels.get(selectedPmIdView) ?? selectedPmIdView.slice(0, 8);
+      const mkt = formatMarketLabel(
+        selectedMarketId,
+        marketLabels.get(selectedMarketId),
+      );
+      return `${mkt} · ${pm}`;
+    }
+    const prop = properties.find((p) => p.id === selectedPropertyId);
+    return (
+      prop?.property_name ?? prop?.address_line1 ?? "Property"
+    );
+  }, [
+    viewLevel,
+    selectedMarketId,
+    selectedPmIdView,
+    selectedPropertyId,
+    marketLabels,
+    pmLabels,
+    properties,
+  ]);
+
+  const scopedHasBookings = useMemo(() => {
+    return scopedProperties.some(
+      (p) => (bookingsByProperty.get(p.id)?.length ?? 0) > 0,
+    );
+  }, [scopedProperties, bookingsByProperty]);
+
+  const hasAnyPmAssignment = useMemo(
+    () => properties.some((p) => Boolean(pmByProperty.get(p.id))),
+    [properties, pmByProperty],
+  );
+
+  const showAnalytics =
+    locksNow.currComplete &&
+    (viewLevel !== "property" || scopedHasBookings || bookingsLoading);
 
   /** Chart rows with dual series for Recharts — current solid, prior muted dashed. */
   const chartDatum = currCombined.map((r) => {
@@ -865,30 +1355,160 @@ export default function AnalyticsPage() {
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2">
-        <div>
-          <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-            Property
-          </label>
-          {properties.length === 1 ? (
-            <div className="mt-2 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50">
-              {properties[0].property_name ??
-                properties[0].address_line1 ??
-                "Property"}
+        <div className="space-y-3">
+          <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+            View
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {(
+              [
+                ["portfolio", "Portfolio"],
+                ["market", "Market"],
+                ["pm", "PM"],
+                ["property", "Property"],
+              ] as const
+            ).map(([level, label]) => {
+              const selected = viewLevel === level;
+              const disabled =
+                level === "market"
+                  ? hierarchyMarkets.length === 0
+                  : level === "pm"
+                    ? hierarchyMarkets.length === 0 || !hasAnyPmAssignment
+                    : level === "property"
+                      ? properties.length === 0
+                      : false;
+              return (
+                <button
+                  key={level}
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => {
+                    if (disabled) return;
+                    setViewLevel(level);
+                    if (level === "portfolio") {
+                      setSelectedMarketId("");
+                      setSelectedPmIdView("");
+                      setSelectedPropertyId("");
+                    } else if (level === "market" && hierarchyMarkets.length) {
+                      setSelectedMarketId((cur) =>
+                        cur && hierarchyMarkets.some((m) => m.id === cur)
+                          ? cur
+                          : hierarchyMarkets[0].id,
+                      );
+                      setSelectedPmIdView("");
+                      setSelectedPropertyId("");
+                    } else if (level === "pm" && hierarchyMarkets.length) {
+                      const mkt =
+                        selectedMarketId &&
+                        hierarchyMarkets.some((m) => m.id === selectedMarketId)
+                          ? selectedMarketId
+                          : hierarchyMarkets[0].id;
+                      setSelectedMarketId(mkt);
+                      setSelectedPmIdView("");
+                      setSelectedPropertyId("");
+                    } else if (level === "property" && hierarchyMarkets.length) {
+                      const mkt =
+                        selectedMarketId &&
+                        hierarchyMarkets.some((m) => m.id === selectedMarketId)
+                          ? selectedMarketId
+                          : hierarchyMarkets[0].id;
+                      setSelectedMarketId(mkt);
+                      setSelectedPmIdView("");
+                      setSelectedPropertyId("");
+                    }
+                  }}
+                  className={[
+                    "rounded-lg border px-3 py-2 text-xs font-semibold uppercase tracking-wide",
+                    disabled
+                      ? "cursor-not-allowed border-zinc-200 bg-zinc-100 text-zinc-400 opacity-70 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-500"
+                      : selected
+                        ? "border-emerald-600 bg-emerald-600 text-white dark:border-emerald-500 dark:bg-emerald-600"
+                        : "border-zinc-200 bg-white text-zinc-800 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50 dark:hover:bg-zinc-900",
+                  ].join(" ")}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+
+          {viewLevel !== "portfolio" ? (
+            <div className="space-y-2 rounded-lg border border-zinc-200 bg-zinc-50/80 p-3 dark:border-zinc-700 dark:bg-zinc-900/40">
+              <div>
+                <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400">
+                  Market
+                </label>
+                <select
+                  className="mt-1 block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50"
+                  value={selectedMarketId}
+                  onChange={(e) => {
+                    setSelectedMarketId(e.target.value);
+                    setSelectedPmIdView("");
+                    setSelectedPropertyId("");
+                  }}
+                >
+                  {hierarchyMarkets.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {viewLevel === "pm" || viewLevel === "property" ? (
+                <div>
+                  <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400">
+                    Property manager
+                  </label>
+                  <select
+                    className="mt-1 block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50"
+                    value={selectedPmIdView}
+                    onChange={(e) => {
+                      setSelectedPmIdView(e.target.value);
+                      setSelectedPropertyId("");
+                    }}
+                  >
+                    {hierarchyPmsForMarket.map((pm) => (
+                      <option key={pm.id} value={pm.id}>
+                        {pm.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
+
+              {viewLevel === "property" ? (
+                <div>
+                  <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400">
+                    Property
+                  </label>
+                  {hierarchyPropertiesForPm.length === 1 ? (
+                    <div className="mt-1 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50">
+                      {hierarchyPropertiesForPm[0].property_name ??
+                        hierarchyPropertiesForPm[0].address_line1 ??
+                        "Property"}
+                    </div>
+                  ) : (
+                    <select
+                      className="mt-1 block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50"
+                      value={selectedPropertyId}
+                      onChange={(e) => setSelectedPropertyId(e.target.value)}
+                    >
+                      {hierarchyPropertiesForPm.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.property_name ?? p.address_line1 ?? p.id.slice(0, 8)}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              ) : null}
             </div>
-          ) : (
-            <select
-              className="mt-2 block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50"
-              value={selectedPropertyId}
-              onChange={(e) => setSelectedPropertyId(e.target.value)}
-            >
-              <option value="">Choose a property…</option>
-              {properties.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.property_name ?? p.address_line1 ?? p.id.slice(0, 8)}
-                </option>
-              ))}
-            </select>
-          )}
+          ) : null}
+
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            Showing: <span className="font-medium text-zinc-700 dark:text-zinc-300">{viewScopeLabel}</span>
+          </p>
         </div>
 
         <div className="space-y-2">
@@ -926,12 +1546,12 @@ export default function AnalyticsPage() {
             })}
           </div>
           {periodMode === "ltm" &&
-          coverageLocks.ltm.currComplete &&
-          !coverageLocks.ltm.priorComplete ? (
+          locksNow.currComplete &&
+          !locksNow.priorComplete ? (
             <p className="text-xs text-amber-800 dark:text-amber-300">
               LTM comparison pending — uploads still incomplete for the prior 12‑month mirror window
-              {coverageLocks.ltm.incompleteMonthsPrior[0]
-                ? ` (earliest gap: ${formatMonthHeading(coverageLocks.ltm.incompleteMonthsPrior[0].year, coverageLocks.ltm.incompleteMonthsPrior[0].month)})`
+              {locksNow.incompleteMonthsPrior[0]
+                ? ` (earliest gap: ${formatMonthHeading(locksNow.incompleteMonthsPrior[0].year, locksNow.incompleteMonthsPrior[0].month)})`
                 : ""}
               .
             </p>
@@ -939,20 +1559,20 @@ export default function AnalyticsPage() {
         </div>
       </div>
 
-      {!selectedPropertyId ? (
-        <EmptySelectProperty />
-      ) : !activePmId ? (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200">
-          No active property manager assignment found for analytics coverage.
-          Contact support to link your PM relationship.
-        </div>
-      ) : propertyBookingsFiltered.length === 0 && !bookingsLoading ? (
+      {!locksNow.currComplete ? (
+        <CoverageLockedEmpty
+          viewLabel={viewScopeLabel}
+          earliestGap={inclusionNow.incompleteMonthsCurr[0]}
+        />
+      ) : viewLevel === "property" &&
+        !scopedHasBookings &&
+        !bookingsLoading ? (
         <UploadFirstEmpty />
       ) : pmTransitionWarning ? (
         <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm dark:border-amber-800 dark:bg-amber-950/30">
           PM transition — comparative data unavailable for this period.
         </div>
-      ) : (
+      ) : showAnalytics ? (
         <>
           {covLoading ? (
             <p className="text-sm text-zinc-600 dark:text-zinc-400">Loading coverage…</p>
@@ -1060,17 +1680,40 @@ export default function AnalyticsPage() {
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
+
+            {viewLevel !== "property" && currTotal > 0 ? (
+              <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
+                {currIncluded} of {currTotal} properties included
+                {currInsufficient > 0
+                  ? ` — ${currInsufficient} ${currInsufficient === 1 ? "property has" : "properties have"} insufficient data for this period.`
+                  : "."}
+              </p>
+            ) : null}
           </section>
         </>
-      )}
+      ) : null}
     </div>
   );
 }
 
-function EmptySelectProperty() {
+function CoverageLockedEmpty({
+  viewLabel,
+  earliestGap,
+}: {
+  viewLabel: string;
+  earliestGap?: CalendarMonth;
+}) {
   return (
     <div className="rounded-lg border border-zinc-200 px-4 py-6 text-center text-sm text-zinc-700 dark:border-zinc-700 dark:bg-zinc-950/40 dark:text-zinc-300">
-      Select a property to load analytics KPIs.
+      <p className="font-medium text-zinc-900 dark:text-zinc-50">
+        Analytics locked for {viewLabel}
+      </p>
+      <p className="mt-2">
+        No properties in this view have complete uploads for the selected period.
+        {earliestGap
+          ? ` Earliest gap: ${formatMonthHeading(earliestGap.year, earliestGap.month)}.`
+          : ""}
+      </p>
     </div>
   );
 }
