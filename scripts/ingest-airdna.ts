@@ -16,8 +16,8 @@
  * (`/submarket/{submarketId}/metrics/revpar|adr|occupancy`). A POST to flat
  * `/submarket/revpar` returns 400 (verified against the live API).
  *
- * Listing filter note: `--filter` maps to AirDNA listing_type value `entire_place`
- * (their API rejects the human label "Entire home/apt").
+ * Listing filter: dry-run / seed / refresh default to AirDNA listing_type `entire_place`
+ * (Entire home/apt). Pass --no-filter to fetch unfiltered submarket metrics.
  */
 
 import * as path from "path";
@@ -279,23 +279,25 @@ function prorateMonthToWeeklySeries(
   {
     isoYear: number;
     isoWeek: number;
-    benchmark_revpar: number;
-    benchmark_adr: number;
+    revpar_weighted: number;
+    revpar_days: number;
+    adr_weighted: number;
+    adr_days: number;
     occupancy_weighted: number;
     occupancy_days: number;
   }
 > {
   const dim = daysInCalendarMonth(year, month);
-  const drRev = triple.revpar / dim;
-  const drAdr = triple.adr / dim;
 
   const weekMap = new Map<
     string,
     {
       isoYear: number;
       isoWeek: number;
-      benchmark_revpar: number;
-      benchmark_adr: number;
+      revpar_weighted: number;
+      revpar_days: number;
+      adr_weighted: number;
+      adr_days: number;
       occupancy_weighted: number;
       occupancy_days: number;
     }
@@ -310,15 +312,20 @@ function prorateMonthToWeeklySeries(
       cur = {
         isoYear,
         isoWeek,
-        benchmark_revpar: 0,
-        benchmark_adr: 0,
+        revpar_weighted: 0,
+        revpar_days: 0,
+        adr_weighted: 0,
+        adr_days: 0,
         occupancy_weighted: 0,
         occupancy_days: 0,
       };
       weekMap.set(key, cur);
     }
-    cur.benchmark_revpar += drRev;
-    cur.benchmark_adr += drAdr;
+    /* RevPAR and ADR are rates (not flows) — accumulate for day-weighted average per ISO week. */
+    cur.revpar_weighted += triple.revpar;
+    cur.revpar_days += 1;
+    cur.adr_weighted += triple.adr;
+    cur.adr_days += 1;
     cur.occupancy_weighted += triple.occ;
     cur.occupancy_days += 1;
   }
@@ -326,28 +333,32 @@ function prorateMonthToWeeklySeries(
   return weekMap;
 }
 
+type WeeklyRowAgg = {
+  isoYear: number;
+  isoWeek: number;
+  revpar_weighted: number;
+  revpar_days: number;
+  adr_weighted: number;
+  adr_days: number;
+  occupancy_weighted: number;
+  occupancy_days: number;
+};
+
 function mergeWeekMaps(into: Map<string, WeeklyRowAgg>, delta: Map<string, WeeklyRowAgg>): void {
   for (const [k, row] of delta) {
     const cur = into.get(k);
     if (!cur) {
       into.set(k, { ...row });
     } else {
-      cur.benchmark_revpar += row.benchmark_revpar;
-      cur.benchmark_adr += row.benchmark_adr;
+      cur.revpar_weighted += row.revpar_weighted;
+      cur.revpar_days += row.revpar_days;
+      cur.adr_weighted += row.adr_weighted;
+      cur.adr_days += row.adr_days;
       cur.occupancy_weighted += row.occupancy_weighted;
       cur.occupancy_days += row.occupancy_days;
     }
   }
 }
-
-type WeeklyRowAgg = {
-  isoYear: number;
-  isoWeek: number;
-  benchmark_revpar: number;
-  benchmark_adr: number;
-  occupancy_weighted: number;
-  occupancy_days: number;
-};
 
 function parseYm(ym: string): { year: number; month: number } | null {
   const m = /^(\d{4})-(\d{2})$/.exec(ym.trim());
@@ -676,13 +687,21 @@ async function ingestMetricsModes(
 
   for (const [, row] of sortedWeekEntries) {
     if (!row) continue;
+    const revparDays = row.revpar_days;
+    const adrDays = row.adr_days;
     const occDays = row.occupancy_days;
     upsertBodies.push({
       market_id: cli.market.toLowerCase(),
       year: row.isoYear,
       week_number: row.isoWeek,
-      benchmark_revpar: Math.round(row.benchmark_revpar * 100) / 100,
-      benchmark_adr: Math.round(row.benchmark_adr * 100) / 100,
+      benchmark_revpar:
+        revparDays > 0
+          ? Math.round((row.revpar_weighted / revparDays) * 100) / 100
+          : 0,
+      benchmark_adr:
+        adrDays > 0
+          ? Math.round((row.adr_weighted / adrDays) * 100) / 100
+          : 0,
       benchmark_occ:
         occDays > 0
           ? Math.round((row.occupancy_weighted / occDays) * 100) / 100
@@ -833,6 +852,11 @@ async function main(): Promise<void> {
   if (!cli.mode) {
     console.error("Missing --mode (search | dry-run | seed | refresh).");
     process.exit(1);
+  }
+
+  /* Entire-home filter matches AirDNA dashboard default; pass --no-filter to disable. */
+  if (cli.mode !== "search" && !process.argv.includes("--no-filter")) {
+    cli.filterListingType = true;
   }
 
   if (cli.year !== undefined && cli.mode !== "seed") {
