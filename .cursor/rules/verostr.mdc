@@ -153,7 +153,10 @@ regardless of which toggle is selected. Delta is hidden (not shown as zero) if p
 - **Owner billing before PM billing** — PM Growth/Professional/Enterprise tiers are Phase 2
 - **Subscription access rule:** `status IN ('trialing', 'active')` = allow. All other statuses = prompt to subscribe.
 - **Webhook idempotency:** Use Stripe event ID to deduplicate. Stripe can deliver the same event more than once.
-
+- **Billing page gate:** Read `feature_flags` directly (not via `has_feature_access`) — `has_feature_access` requires an existing subscription; the billing page runs before one exists
+- **Annual price key:** `owner_essentials_annual` — read via `get_current_rate('owner_essentials_annual')`
+- **Monthly price key:** `owner_essentials_monthly` — read via `get_current_rate('owner_essentials_monthly')`
+- **STRIPE_WEBHOOK_SECRET:** `.env.local` currently holds the Stripe CLI local secret — swap for the dashboard webhook secret before any production deployment
 ---
 
 ## Active Properties (as of Sprint 15)
@@ -179,7 +182,12 @@ AirDNA submarket: `airdna-2116` (Rosemary Beach / 30a) for `market_id = '30a'`
 | Upload page | `app/dashboard/upload/page.tsx` |
 | AirDNA ingest script | `scripts/ingest-airdna.ts` |
 | Admin file format editor | `app/admin/file-format-editor/page.tsx` |
-
+| Billing page         | `app/dashboard/billing/page.tsx`             |
+| Billing checkout UI  | `app/dashboard/billing/billing-checkout.tsx` |
+| Checkout API route   | `app/api/billing/checkout/route.ts`          |
+| Webhook handler      | `app/api/webhooks/stripe/route.ts`           |
+| Webhook handlers lib | `lib/stripe-webhook-handlers.ts`             |
+| Billing rates lib    | `lib/billing-rates.ts`                       |
 ---
 
 ## Scope Guards — What NOT to Build
@@ -208,4 +216,4 @@ npx ts-node scripts/ingest-airdna.ts --mode refresh --market 30a
 
 ---
 
-*VeroSTR | verostr.mdc | Schema v0.18 | Analytics Spec v1.4 | Sprint 15*
+*VeroSTR | verostr.mdc | Schema v0.18 | Analytics Spec v1.4 | Sprint 16*
