@@ -2,7 +2,7 @@
 
 import { createClient } from "@/lib/supabase";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import PmManagerCard from "@/components/PmManagerCard";
 import {
@@ -550,7 +550,9 @@ function AttentionBadgeLink({
 
 export default function DashboardPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const supabase = createClient();
+  const showSubscribedBanner = searchParams.get("subscribed") === "true";
 
   const [email, setEmail] = useState<string | null>(null);
   const [properties, setProperties] = useState<PropertyRow[]>([]);
@@ -1221,6 +1223,16 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-8">
+      {showSubscribedBanner ? (
+        <div
+          className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-100"
+          role="status"
+        >
+          Your Essentials subscription is active. Analytics and benchmarking are
+          now available.
+        </div>
+      ) : null}
+
       <div>
         <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
           Welcome{email ? `, ${email}` : ""}
