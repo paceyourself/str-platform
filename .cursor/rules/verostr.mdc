@@ -1,0 +1,211 @@
+---
+description: VeroSTR platform invariants — read before any analytics, dashboard, upload, or billing code
+globs:
+alwaysApply: true
+---
+# VeroSTR — Cursor Standing Rules
+# Analytics Framework Spec v1.4 | Schema v0.18 | Sprint 15
+# Read this before touching any analytics, dashboard, upload, or billing code.
+
+---
+
+## Platform Identity
+
+- **Product:** VeroSTR — STR owner analytics and PM accountability SaaS
+- **Stack:** Next.js 16, Supabase/Postgres, Vercel, TypeScript
+- **Repo:** github.com/paceyourself/str-platform
+- **Live:** verostr.com
+- **Schema version:** v0.18 (40 tables)
+- **Analytics spec:** v1.4 (STR_Analytics_Framework_Spec_Current.docx — authoritative)
+
+---
+
+## Non-Negotiable Calculation Rules
+
+Violating any of these creates silent data errors. Do not deviate without an explicit decision logged in the spec.
+
+### Revenue column
+```
+✅ gross_revenue
+❌ net_owner_revenue — this column no longer exists (renamed Sprint 11)
+```
+Net owner revenue is computed at query time only when pm_fee_pct is known:
+`gross_revenue * (1 - pm_fee_pct)` — never stored, never used as a base metric.
+
+### Nights column
+```
+✅ (check_out::date - check_in::date)  — computed inline every time
+❌ nights  — this column does not exist in the bookings table
+```
+
+### Cross-month booking proration — REQUIRED on every revenue/nights query
+Every query summing revenue or counting nights must use the overlap formula.
+Never attribute full booking values to a single period when a booking crosses a month boundary.
+
+```sql
+-- Overlap days
+overlap_days = LEAST(check_out::date, period_end::date)
+             - GREATEST(check_in::date, period_start::date)
+
+-- Prorated revenue
+prorated_revenue = gross_revenue
+  * (LEAST(check_out::date, period_end::date)
+     - GREATEST(check_in::date, period_start::date))::numeric
+  / (check_out::date - check_in::date)::numeric
+
+-- Booking inclusion filter (always include all three conditions)
+check_in < period_end
+AND check_out > period_start
+AND check_in < CURRENT_DATE   -- excludes future bookings
+```
+
+### Future bookings
+```
+✅ Stored in bookings table as-is
+✅ Excluded from all analytics via: check_in < CURRENT_DATE
+❌ Never appear in any closed-period revenue, occupancy, ADR, or RevPAR calculation
+```
+
+### Available nights denominator
+```
+available_nights = calendar_nights
+                 − planned_owner_stay_nights    (is_planned_owner_stay = true, booked ≥14 days prior)
+                 − owner_guest_nights           (block_type = 'owner_guest')
+                 − maintenance_nights           (block_type = 'maintenance')
+```
+Last-minute owner stays (booked <14 days prior) are NOT subtracted — they reduce revenue but not the denominator.
+
+### Portfolio RevPAR
+```
+✅ SUM(revenue) / SUM(available_nights)  — available-nights-weighted
+❌ AVG(property_revpar)                  — never average the averages
+```
+
+### Benchmark metrics
+```
+benchmark_occ    — stored as 0–100 percentage scale. Use as-is. DO NOT divide by 100.
+benchmark_adr    — stored as day-weighted rate. Use as-is.
+benchmark_revpar — stored as day-weighted rate. Use as-is.
+```
+All three are day-weighted rates, not daily fractions. Aggregation uses day-weighted average:
+```sql
+SUM(benchmark_revpar * days_in_period) / SUM(days_in_period)
+```
+
+### Benchmark chart guard — applies to BOTH analytics page and dashboard
+Only plot benchmark weeks where the ISO week start date falls within a month
+that has `data_complete = true` in `property_coverage_months`.
+
+```sql
+JOIN property_coverage_months pcm
+  ON pcm.property_id   = :property_id
+  AND pcm.coverage_year  = EXTRACT(year  FROM mb.week_start_date)::int
+  AND pcm.coverage_month = EXTRACT(month FROM mb.week_start_date)::int
+  AND pcm.data_complete  = true
+```
+
+---
+
+## Period Framework — CYTD / LTM / LFY
+
+Both the analytics page (`/dashboard/analytics`) and the dashboard (`/dashboard`) use identical toggle labels and identical period logic. There is no QUARTER toggle. There is no All Time toggle.
+
+| Toggle | Current period | Comparison period | Sufficiency |
+|--------|---------------|-------------------|-------------|
+| CYTD | Jan 1 current year → last complete month | Jan 1 prior year → same month end prior year | ≥1 complete month current year AND same months complete in prior year |
+| LTM | Last 12 complete months | 12 months before that (PLTM) | All 24 months complete |
+| LFY | Last full calendar year | Calendar year before that | All 24 months complete |
+
+**Default on load:** CYTD if available → LTM → LFY → locked state with LTM progress indicator.
+
+**CYTD period boundaries (TypeScript pattern):**
+```ts
+// Current period
+const period_start = startOfYear(new Date())           // Jan 1 current year
+const period_end   = endOfMonth(lastCompleteMonth)     // from property_coverage_months
+
+// Comparison period
+const comp_start   = startOfYear(subYears(new Date(), 1))  // Jan 1 prior year
+const comp_end     = subYears(period_end, 1)               // same month end, prior year
+```
+
+**YoY delta rule (dashboard cards):** Always compare current period to the same period prior year,
+regardless of which toggle is selected. Delta is hidden (not shown as zero) if prior year data is incomplete.
+
+---
+
+## Coverage and Completeness
+
+- `property_coverage_months.data_complete = true` — the only source of truth for whether a month has complete data
+- Coverage window floor = `owner_pm_relationships.start_date` — never the first booking date
+- Zero-booking months within PM tenure = `data_complete = true` (valid covered data)
+- Future months never receive `data_complete = true`
+- All period queries must check `property_coverage_months` before computing metrics
+
+---
+
+## Billing Rules
+
+- **Trial length:** Always read from `get_current_rate('owner_trial_days')` via `platform_pricing` table
+- **Never hardcode 90** (or any trial duration) anywhere in application code
+- **Prices:** Always read from `platform_pricing` — never hardcoded in UI or API
+- **Feature flags:** Always read `stripe_checkout_enabled` from `feature_flags` table at runtime — not from env vars or hardcoded booleans
+- **Owner billing before PM billing** — PM Growth/Professional/Enterprise tiers are Phase 2
+- **Subscription access rule:** `status IN ('trialing', 'active')` = allow. All other statuses = prompt to subscribe.
+- **Webhook idempotency:** Use Stripe event ID to deduplicate. Stripe can deliver the same event more than once.
+
+---
+
+## Active Properties (as of Sprint 15)
+
+| Owner | Property | PM | Property ID |
+|-------|----------|----|-------------|
+| Louis Pace | Hideaway Cottage | Oversee | `6a6f825a-4a63-4fb5-8e74-9e257842d5b8` |
+| Louis Pace | Mystic Cottage | Oversee | `b4cb704f-53b5-478a-9775-7ac7e9319eba` |
+| Pascale | Hideaway Cottage | Oversee | `b606d9a7-f21e-48fd-b6f0-39a06e1d127d` |
+| Pascale | Mystic Cottage | Oversee | `54ba4d6d-a7dc-4d96-9f15-3c1f1f406c96` |
+
+PM ID: `fe991b0b-7219-4e70-9351-82fe6e09ff31` (Oversee)
+PM relationship start date: 2023-10-23 for all four properties.
+AirDNA submarket: `airdna-2116` (Rosemary Beach / 30a) for `market_id = '30a'`
+
+---
+
+## Key File Locations
+
+| File | Path |
+|------|------|
+| Analytics page | `app/dashboard/analytics/page.tsx` |
+| Upload page | `app/dashboard/upload/page.tsx` |
+| AirDNA ingest script | `scripts/ingest-airdna.ts` |
+| Admin file format editor | `app/admin/file-format-editor/page.tsx` |
+
+---
+
+## Scope Guards — What NOT to Build
+
+Unless there is an explicit decision in the spec, do not build:
+
+- **Statement revenue view** — cash basis attribution to checkout month. Phase 2. Separate feature.
+- **vs. Fcst tab** — forecast variance. Phase 2. `pm_forecasts` table exists but tab is not active.
+- **Waterfall tab** — revenue bridge. Phase 2.
+- **Pacing view** — future bookings vs. forecast. Phase 2.
+- **PM billing tiers** (Growth / Professional / Enterprise) — Phase 2. Owner billing ships first.
+- **CYTD forecast comparison** — Phase 2. Period structure is in place; only the comparison series changes.
+- **RevPAR Index normalization / bedroom cohort** — Phase 2 refinement.
+- **Quarter toggle** — removed in v1.4. Do not re-add.
+- **All Time toggle** — removed in v1.4. Do not re-add.
+
+---
+
+## AirDNA Monthly Refresh
+
+Run after prior month closes. Never re-pull historical years.
+```bash
+npx ts-node scripts/ingest-airdna.ts --mode refresh --market 30a
+```
+`entire_place` filter is the default. Pass `--no-filter` for diagnostic use only.
+
+---
+
+*VeroSTR | verostr.mdc | Schema v0.18 | Analytics Spec v1.4 | Sprint 15*

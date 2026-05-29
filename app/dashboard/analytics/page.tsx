@@ -65,7 +65,7 @@ type BenchmarkRow = {
   benchmark_occ: number | string | null;
 };
 
-type PeriodMode = "qtr" | "ltm" | "lfy";
+type PeriodMode = "cytd" | "ltm" | "lfy";
 
 type CalendarMonth = { year: number; month: number };
 
@@ -84,7 +84,7 @@ const PERIOD_TOGGLE_DEF: Record<
   PeriodMode,
   { label: string; shortLabel: string }
 > = {
-  qtr: { label: "Qtr vs PYQtr", shortLabel: "Quarter" },
+  cytd: { label: "CYTD vs PYTD", shortLabel: "CYTD" },
   ltm: { label: "LTM vs PLTM", shortLabel: "LTM" },
   lfy: { label: "LFY vs PLFY", shortLabel: "LFY" },
 };
@@ -274,42 +274,22 @@ function sumBenchmarkMonthlyForMarket(
   };
 }
 
-/** Last fiscal quarter FULLY CLOSED BEFORE today (months end Mar/Jun/Sep/Dec only). */
-function lastClosedQuarterEndingMonth(lcm: CalendarMonth): CalendarMonth {
-  let { year, month } = lcm;
-  while (![3, 6, 9, 12].includes(month)) {
-    if (month === 1) {
-      month = 12;
-      year -= 1;
-    } else {
-      month -= 1;
-    }
+function buildCytdWindows(
+  lcm: CalendarMonth,
+  now = new Date(),
+): { current: CalendarMonth[]; prior: CalendarMonth[] } {
+  const currentYear = now.getFullYear();
+  if (lcm.year !== currentYear || lcm.month < 1) {
+    return { current: [], prior: [] };
   }
-  return { year, month };
-}
-
-function quarterMonthsForEnd(end: CalendarMonth): CalendarMonth[] {
-  const months: CalendarMonth[] = [];
-  let { year, month } = end;
-  for (let k = 0; k < 3; k++) {
-    months.push({ year, month });
-    month -= 1;
-    if (month < 1) {
-      month = 12;
-      year -= 1;
-    }
+  const current: CalendarMonth[] = [];
+  for (let m = 1; m <= lcm.month; m++) {
+    current.push({ year: currentYear, month: m });
   }
-  return months.reverse();
-}
-
-function buildQuarterWindows(lcm: CalendarMonth): {
-  current: CalendarMonth[];
-  prior: CalendarMonth[];
-} {
-  const end = lastClosedQuarterEndingMonth(lcm);
-  const current = quarterMonthsForEnd(end);
-  const priorAnchor = shiftMonths(end.year, end.month, -12);
-  const prior = quarterMonthsForEnd(priorAnchor);
+  const prior = current.map(({ month }) => ({
+    year: currentYear - 1,
+    month,
+  }));
   return { current, prior };
 }
 
@@ -629,7 +609,7 @@ export default function AnalyticsPage() {
     () => new Map(),
   );
 
-  const [periodMode, setPeriodMode] = useState<PeriodMode>("ltm");
+  const [periodMode, setPeriodMode] = useState<PeriodMode>("cytd");
   const [activeKpiTab, setActiveKpiTab] = useState<KpiTab>("revenue");
   const periodDefaultedRef = useRef(false);
 
@@ -889,16 +869,30 @@ export default function AnalyticsPage() {
   const lcm = useMemo(() => lastCompletedCalendarMonth(), []);
 
   const periodWindows = useMemo(() => {
-    const qw = buildQuarterWindows(lcm);
+    const cytd = buildCytdWindows(lcm);
     const lw = buildLtmWindows(lcm);
     const lfyCurr = fiscalYearMonths(lcm.year - 1);
     const lfyPrior = fiscalYearMonths(lcm.year - 2);
     return {
-      qtr: { curr: qw.current, prior: qw.prior },
+      cytd: { curr: cytd.current, prior: cytd.prior },
       ltm: { curr: lw.current, prior: lw.prior },
       lfy: { curr: lfyCurr, prior: lfyPrior },
     } as Record<PeriodMode, { curr: CalendarMonth[]; prior: CalendarMonth[] }>;
   }, [lcm]);
+
+  const unionCoverageMap = useMemo(() => {
+    const unionCovRows: CoverageRow[] = [];
+    for (const p of scopedProperties) {
+      const pmId = pmByProperty.get(p.id) ?? "";
+      if (!pmId) continue;
+      unionCovRows.push(
+        ...coverage.filter(
+          (c) => c.property_id === p.id && c.pm_id === pmId,
+        ),
+      );
+    }
+    return buildCoverageMap(unionCovRows);
+  }, [scopedProperties, coverage, pmByProperty]);
 
   const bookingsByProperty = useMemo(() => {
     const m = new Map<string, BookingRow[]>();
@@ -923,7 +917,7 @@ export default function AnalyticsPage() {
       incompleteMonthsPrior: CalendarMonth[];
     };
     const out: Record<PeriodMode, Rec> = {
-      qtr: {
+      cytd: {
         currIncluded: 0,
         priorIncluded: 0,
         total: 0,
@@ -949,7 +943,7 @@ export default function AnalyticsPage() {
       },
     };
 
-    for (const mode of ["qtr", "ltm", "lfy"] as PeriodMode[]) {
+    for (const mode of ["cytd", "ltm", "lfy"] as PeriodMode[]) {
       const { curr, prior } = periodWindows[mode];
       const total = scopedProperties.length;
       let currIncluded = 0;
@@ -1083,8 +1077,21 @@ export default function AnalyticsPage() {
     if (covLoading || !scopedProperties.length) return;
     if (periodDefaultedRef.current) return;
     periodDefaultedRef.current = true;
-    const order: PeriodMode[] = ["qtr", "ltm", "lfy"];
-    const ok = order.find((m) => coverageInclusionByMode[m].currIncluded > 0);
+    const order: PeriodMode[] = ["cytd", "ltm", "lfy"];
+    const ok = order.find((m) => {
+      if (m === "cytd") {
+        const { curr, prior } = periodWindows.cytd;
+        const currentYear = new Date().getFullYear();
+        if (curr.length === 0) return false;
+        const anyCompleteCurr = curr.some((mo) => {
+          const r = unionCoverageMap.get(monthKey(mo.year, mo.month));
+          return r?.data_complete || r?.admin_override;
+        });
+        if (!anyCompleteCurr) return false;
+        return coverageHoles(unionCoverageMap, prior).length === 0;
+      }
+      return coverageInclusionByMode[m].currIncluded > 0;
+    });
     if (ok) setPeriodMode(ok);
   }, [
     viewLevel,
@@ -1094,6 +1101,8 @@ export default function AnalyticsPage() {
     covLoading,
     coverageInclusionByMode,
     scopedProperties.length,
+    periodWindows.cytd,
+    unionCoverageMap,
   ]);
 
   useEffect(() => {
@@ -1202,8 +1211,36 @@ export default function AnalyticsPage() {
     mode: PeriodMode,
   ): { locked: boolean; tooltip: string } => {
     const L = coverageInclusionByMode[mode];
+    const currentYear = new Date().getFullYear();
     if (!scopedProperties.length) {
       return { locked: true, tooltip: "No properties in this view." };
+    }
+    if (mode === "cytd") {
+      const { curr, prior } = periodWindows.cytd;
+      if (curr.length === 0) {
+        return {
+          locked: true,
+          tooltip: `No data yet for ${currentYear}. Upload your first statement to unlock.`,
+        };
+      }
+      const anyCompleteCurr = curr.some((m) => {
+        const r = unionCoverageMap.get(monthKey(m.year, m.month));
+        return r?.data_complete || r?.admin_override;
+      });
+      if (!anyCompleteCurr) {
+        return {
+          locked: true,
+          tooltip: `No data yet for ${currentYear}. Upload your first statement to unlock.`,
+        };
+      }
+      const priorHoles = coverageHoles(unionCoverageMap, prior);
+      if (priorHoles.length > 0) {
+        const g = priorHoles[0];
+        return {
+          locked: true,
+          tooltip: `${formatMonthHeading(g.year, g.month)} data needed to compare. Upload historical statements to unlock.`,
+        };
+      }
     }
     if (L.currIncluded === 0) {
       const m = L.incompleteMonthsCurr[0];
@@ -1545,11 +1582,11 @@ export default function AnalyticsPage() {
               );
             })}
           </div>
-          {periodMode === "ltm" &&
+          {(periodMode === "ltm" || periodMode === "cytd") &&
           locksNow.currComplete &&
           !locksNow.priorComplete ? (
             <p className="text-xs text-amber-800 dark:text-amber-300">
-              LTM comparison pending — uploads still incomplete for the prior 12‑month mirror window
+              {periodMode === "ltm" ? "LTM" : "CYTD"} comparison pending — uploads still incomplete for the prior mirror window
               {locksNow.incompleteMonthsPrior[0]
                 ? ` (earliest gap: ${formatMonthHeading(locksNow.incompleteMonthsPrior[0].year, locksNow.incompleteMonthsPrior[0].month)})`
                 : ""}

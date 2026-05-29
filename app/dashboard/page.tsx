@@ -3,7 +3,7 @@
 import { createClient } from "@/lib/supabase";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import PmManagerCard from "@/components/PmManagerCard";
 import {
   CartesianGrid,
@@ -73,6 +73,30 @@ type BookingRow = {
   gross_revenue: number | string | null;
   check_in: string | null;
   check_out: string | null;
+  status: string | null;
+  is_planned_owner_stay: boolean | null;
+};
+
+type PeriodMode = "cytd" | "ltm" | "lfy";
+
+type CalendarMonth = { year: number; month: number };
+
+type CoverageRow = {
+  property_id: string;
+  pm_id: string;
+  coverage_year: number;
+  coverage_month: number;
+  data_complete: boolean;
+  admin_override: boolean;
+};
+
+const PERIOD_TOGGLE_DEF: Record<
+  PeriodMode,
+  { label: string; shortLabel: string }
+> = {
+  cytd: { label: "CYTD vs PYTD", shortLabel: "CYTD" },
+  ltm: { label: "LTM vs PLTM", shortLabel: "LTM" },
+  lfy: { label: "LFY vs PLFY", shortLabel: "LFY" },
 };
 
 /** Expected columns: market_id, year, week_number, benchmark_revpar */
@@ -84,19 +108,265 @@ type BenchmarkRow = {
 
 const GUEST_BLOCK_TYPES = new Set(["guest_ota", "guest_pm_direct"]);
 
-function isGuestBooking(blockType: string | null | undefined) {
-  return blockType != null && GUEST_BLOCK_TYPES.has(blockType);
+function reducesAvailableDenominator(
+  book: BookingRow,
+  blockTypeNormalized: string,
+): boolean {
+  const bt = blockTypeNormalized.toLowerCase();
+  if (bt === "owner_guest" || bt === "maintenance") return true;
+  if (bt !== "owner_stay") return false;
+  return book.is_planned_owner_stay !== false;
 }
 
-function stayNightsFromCheckInOut(
-  checkIn: string | null,
-  checkOut: string | null
+function monthKey(y: number, m: number): string {
+  return `${y}-${String(m).padStart(2, "0")}`;
+}
+
+function formatMonthHeading(y: number, m: number): string {
+  return new Date(y, m - 1, 1).toLocaleString(undefined, {
+    month: "long",
+    year: "numeric",
+  });
+}
+
+function lastCompletedCalendarMonth(now = new Date()): CalendarMonth {
+  const d = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  return { year: d.getFullYear(), month: d.getMonth() + 1 };
+}
+
+function ymToMonthIndex(y: number, m: number): number {
+  return y * 12 + m - 1;
+}
+
+function shiftMonths(y: number, m: number, delta: number): CalendarMonth {
+  const idx = ymToMonthIndex(y, m) + delta;
+  return { year: Math.floor(idx / 12), month: (idx % 12) + 1 };
+}
+
+function boundsOfCalendarMonth(
+  year: number,
+  month: number,
+): { first: Date; last: Date } {
+  const first = new Date(year, month - 1, 1, 12, 0, 0);
+  const dim = daysInCalendarMonth(year, month);
+  const last = new Date(year, month - 1, dim, 12, 0, 0);
+  return { first, last };
+}
+
+function parseDateMidday(iso: string | null | undefined): Date | null {
+  if (!iso) return null;
+  const x = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso).trim());
+  if (!x) return null;
+  const y = Number(x[1]);
+  const m = Number(x[2]);
+  const d = Number(x[3]);
+  const dt = new Date(y, m - 1, d, 12, 0, 0);
+  if (
+    dt.getFullYear() !== y ||
+    dt.getMonth() !== m - 1 ||
+    dt.getDate() !== d
+  ) {
+    return null;
+  }
+  return dt;
+}
+
+function nightsIntersectCalendarMonthHalfOpenStay(
+  checkInIso: string | null,
+  checkOutIso: string | null,
+  year: number,
+  month: number,
 ): number {
-  if (!checkIn || !checkOut) return 0;
-  const t0 = new Date(checkIn).getTime();
-  const t1 = new Date(checkOut).getTime();
-  if (!Number.isFinite(t0) || !Number.isFinite(t1)) return 0;
-  return Math.round((t1 - t0) / 86400000);
+  const ci = parseDateMidday(checkInIso);
+  const co = parseDateMidday(checkOutIso);
+  const { first } = boundsOfCalendarMonth(year, month);
+  const monthEndExclusive = new Date(year, month, 1, 12, 0, 0);
+  if (!ci || !co || !(co > ci)) return 0;
+  if (!(ci.getTime() < monthEndExclusive.getTime() && co.getTime() > first.getTime())) {
+    return 0;
+  }
+  const overlapStart =
+    ci.getTime() > first.getTime()
+      ? new Date(ci.getFullYear(), ci.getMonth(), ci.getDate(), 12)
+      : first;
+  const overlapEndExclusive =
+    co.getTime() < monthEndExclusive.getTime() ? co : monthEndExclusive;
+  if (!(overlapEndExclusive > overlapStart)) return 0;
+  return Math.round(
+    (overlapEndExclusive.getTime() - overlapStart.getTime()) / 86400000,
+  );
+}
+
+function totalHalfOpenStayNights(
+  checkInIso: string | null,
+  checkOutIso: string | null,
+): number {
+  const ci = parseDateMidday(checkInIso);
+  const co = parseDateMidday(checkOutIso);
+  if (!ci || !co || !(co > ci)) return 0;
+  return Math.round((co.getTime() - ci.getTime()) / 86400000);
+}
+
+function checkInStrictlyBeforeToday(
+  checkInIso: string | null,
+  now = new Date(),
+): boolean {
+  const ci = parseDateMidday(checkInIso);
+  if (!ci) return false;
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12, 0, 0);
+  return ci.getTime() < today.getTime();
+}
+
+function buildCytdWindows(
+  lcm: CalendarMonth,
+  now = new Date(),
+): { current: CalendarMonth[]; prior: CalendarMonth[] } {
+  const currentYear = now.getFullYear();
+  if (lcm.year !== currentYear || lcm.month < 1) {
+    return { current: [], prior: [] };
+  }
+  const current: CalendarMonth[] = [];
+  for (let m = 1; m <= lcm.month; m++) {
+    current.push({ year: currentYear, month: m });
+  }
+  const prior = current.map(({ month }) => ({
+    year: currentYear - 1,
+    month,
+  }));
+  return { current, prior };
+}
+
+function rollingTwelveEnding(lcm: CalendarMonth): CalendarMonth[] {
+  const out: CalendarMonth[] = [];
+  let y = lcm.year;
+  let m = lcm.month;
+  for (let i = 0; i < 12; i++) {
+    out.push({ year: y, month: m });
+    const prev = shiftMonths(y, m, -1);
+    y = prev.year;
+    m = prev.month;
+  }
+  return out.reverse();
+}
+
+function buildLtmWindows(lcm: CalendarMonth): {
+  current: CalendarMonth[];
+  prior: CalendarMonth[];
+} {
+  const current = rollingTwelveEnding(lcm);
+  const priorStartMinus = shiftMonths(current[0].year, current[0].month, -1);
+  const prior = rollingTwelveEnding(priorStartMinus);
+  return { current, prior };
+}
+
+function fiscalYearMonths(fullYear: number): CalendarMonth[] {
+  const months: CalendarMonth[] = [];
+  for (let mo = 1; mo <= 12; mo++) months.push({ year: fullYear, month: mo });
+  return months;
+}
+
+function buildCoverageMap(rows: CoverageRow[]): Map<string, CoverageRow> {
+  const m = new Map<string, CoverageRow>();
+  for (const c of rows) {
+    m.set(monthKey(Number(c.coverage_year), Number(c.coverage_month)), c);
+  }
+  return m;
+}
+
+function coverageHoles(
+  covMap: Map<string, CoverageRow>,
+  months: CalendarMonth[],
+): CalendarMonth[] {
+  return months.filter((mk) => {
+    const r = covMap.get(monthKey(mk.year, mk.month));
+    return !(r?.data_complete || r?.admin_override);
+  });
+}
+
+function propertyPeriodComplete(
+  propertyId: string,
+  pmId: string,
+  months: CalendarMonth[],
+  allCoverage: CoverageRow[],
+): boolean {
+  const rows = allCoverage.filter(
+    (c) => c.property_id === propertyId && c.pm_id === pmId,
+  );
+  return coverageHoles(buildCoverageMap(rows), months).length === 0;
+}
+
+type PeriodStats = {
+  revpar: number | null;
+  guestBookings: number;
+  grossRevenue: number;
+  avgNightly: number | null;
+  ownerStays: number;
+};
+
+function computePeriodStats(
+  bookings: BookingRow[],
+  months: CalendarMonth[],
+): PeriodStats {
+  let grossRevenue = 0;
+  let guestBookedNights = 0;
+  let availableNights = 0;
+  const guestBookingKeys = new Set<string>();
+  const ownerStayKeys = new Set<string>();
+
+  for (const ym of months) {
+    const dim = daysInCalendarMonth(ym.year, ym.month);
+    let availReduction = 0;
+
+    for (const b of bookings) {
+      if (String(b.status ?? "").toLowerCase() === "cancelled") continue;
+      const bt = String(b.block_type ?? "").trim();
+      const overlapDays = nightsIntersectCalendarMonthHalfOpenStay(
+        b.check_in,
+        b.check_out,
+        ym.year,
+        ym.month,
+      );
+      if (overlapDays <= 0) continue;
+
+      if (GUEST_BLOCK_TYPES.has(bt)) {
+        if (!checkInStrictlyBeforeToday(b.check_in)) continue;
+        const totalNights = totalHalfOpenStayNights(b.check_in, b.check_out);
+        if (totalNights <= 0) continue;
+        const gross = Number(b.gross_revenue != null ? b.gross_revenue : NaN) || 0;
+        guestBookedNights += overlapDays;
+        grossRevenue += (gross * overlapDays) / totalNights;
+        guestBookingKeys.add(
+          `${b.property_id}:${b.check_in}:${b.check_out}:${bt}`,
+        );
+      }
+
+      if (reducesAvailableDenominator(b, bt)) {
+        availReduction += overlapDays;
+      }
+
+      const btLower = bt.toLowerCase();
+      if (btLower === "owner_stay" || btLower === "owner_guest") {
+        ownerStayKeys.add(
+          `${b.property_id}:${b.check_in}:${b.check_out}:${btLower}`,
+        );
+      }
+    }
+
+    availableNights += Math.max(0, dim - Math.min(availReduction, dim));
+  }
+
+  return {
+    revpar: availableNights > 0 ? grossRevenue / availableNights : null,
+    guestBookings: guestBookingKeys.size,
+    grossRevenue,
+    avgNightly: guestBookedNights > 0 ? grossRevenue / guestBookedNights : null,
+    ownerStays: ownerStayKeys.size,
+  };
+}
+
+function pctDelta(current: number | null, prior: number | null): number | null {
+  if (current == null || prior == null || prior === 0) return null;
+  return ((current - prior) / prior) * 100;
 }
 
 /** Formats a Postgres `date` or timestamptz string for display. Date-only `YYYY-MM-DD` is treated as a calendar day in the local timezone (avoids UTC midnight shifting the day). */
@@ -147,8 +417,8 @@ function formatMoneyCompact(n: number) {
   }).format(n);
 }
 
-/** Last 12 calendar months ending at current month, oldest first. */
-function getLast12MonthBuckets(): {
+/** Last 12 complete calendar months ending at lcm, oldest first. */
+function getLast12CompleteMonthBuckets(lcm: CalendarMonth): {
   monthKey: string;
   monthLabel: string;
   year: number;
@@ -160,94 +430,76 @@ function getLast12MonthBuckets(): {
     year: number;
     month: number;
   }[] = [];
-  const now = new Date();
-  for (let i = 11; i >= 0; i -= 1) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    const year = d.getFullYear();
-    const month = d.getMonth() + 1;
-    const monthKey = `${year}-${String(month).padStart(2, "0")}`;
-    const monthLabel = d.toLocaleDateString(undefined, {
-      month: "short",
-      year: "numeric",
+  let y = lcm.year;
+  let m = lcm.month;
+  for (let i = 0; i < 12; i++) {
+    out.unshift({
+      monthKey: monthKey(y, m),
+      monthLabel: new Date(y, m - 1, 1).toLocaleDateString(undefined, {
+        month: "short",
+        year: "numeric",
+      }),
+      year: y,
+      month: m,
     });
-    out.push({ monthKey, monthLabel, year, month });
+    const prev = shiftMonths(y, m, -1);
+    y = prev.year;
+    m = prev.month;
   }
   return out;
+}
+
+function DeltaBadge({
+  pct,
+  tooltip,
+}: {
+  pct: number | null;
+  tooltip?: string;
+}) {
+  if (pct == null) return null;
+  return (
+    <p className="mt-0.5 text-xs" title={tooltip}>
+      <span
+        className={
+          pct >= 0
+            ? "text-emerald-700 dark:text-emerald-300"
+            : "text-red-700 dark:text-red-300"
+        }
+      >
+        {pct >= 0 ? "↑" : "↓"} {Math.abs(pct).toFixed(1)}%
+      </span>
+    </p>
+  );
 }
 
 function daysInCalendarMonth(year: number, month1Based: number): number {
   return new Date(year, month1Based, 0).getDate();
 }
 
-function monthKeyFromCheckIn(iso: string | null | undefined): string | null {
-  if (!iso) return null;
-  const m = /^(\d{4})-(\d{2})/.exec(iso.trim());
-  return m ? `${m[1]}-${m[2]}` : null;
-}
-
-function parseYMD(s: string): { y: number; m: number; d: number } | null {
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s.trim());
-  if (!m) return null;
-  return { y: Number(m[1]), m: Number(m[2]), d: Number(m[3]) };
-}
-
-/** Count owner_stay / owner_guest nights that fall on a calendar date inside `monthKey` (YYYY-MM). */
-function countOwnerNightsInMonth(
-  checkIn: string | null,
-  checkOut: string | null,
-  nightsFallback: number,
-  monthKey: string
-): number {
-  const start = parseYMD(checkIn ?? "");
-  if (!start) return 0;
-
-  let endUtc: Date;
-  const co = checkOut ? parseYMD(checkOut) : null;
-  if (co) {
-    endUtc = new Date(Date.UTC(co.y, co.m - 1, co.d));
-  } else {
-    const n = Math.max(0, Math.floor(Number(nightsFallback) || 0));
-    endUtc = new Date(Date.UTC(start.y, start.m - 1, start.d));
-    endUtc.setUTCDate(endUtc.getUTCDate() + Math.max(1, n));
-  }
-
-  const cur = new Date(Date.UTC(start.y, start.m - 1, start.d));
-  let count = 0;
-  while (cur < endUtc) {
-    const mk = `${cur.getUTCFullYear()}-${String(cur.getUTCMonth() + 1).padStart(2, "0")}`;
-    if (mk === monthKey) count += 1;
-    cur.setUTCDate(cur.getUTCDate() + 1);
-  }
-  return count;
-}
-
-/** Map ISO week to calendar month (month of that week's Thursday). */
-function getMonthKeyFromIsoWeek(isoYear: number, isoWeek: number): string {
+/** ISO week start (Monday) → calendar month key for benchmark coverage guard. */
+function getMonthKeyFromIsoWeekStart(isoYear: number, isoWeek: number): string {
   if (!Number.isFinite(isoYear) || !Number.isFinite(isoWeek)) return `${isoYear}-01`;
   const w = Math.min(53, Math.max(1, Math.floor(isoWeek)));
-  const jan4 = new Date(Date.UTC(isoYear, 0, 4));
-  const day = jan4.getUTCDay() || 7;
+  const jan4 = new Date(isoYear, 0, 4, 12, 0, 0);
+  const dow = (jan4.getDay() + 6) % 7;
   const week1Monday = new Date(jan4);
-  week1Monday.setUTCDate(jan4.getUTCDate() - day + 1);
-  const targetMonday = new Date(week1Monday);
-  targetMonday.setUTCDate(week1Monday.getUTCDate() + (w - 1) * 7);
-  const thursday = new Date(targetMonday);
-  thursday.setUTCDate(targetMonday.getUTCDate() + 3);
-  const y = thursday.getUTCFullYear();
-  const mo = thursday.getUTCMonth() + 1;
-  return `${y}-${String(mo).padStart(2, "0")}`;
+  week1Monday.setDate(jan4.getDate() - dow);
+  const monday = new Date(week1Monday);
+  monday.setDate(week1Monday.getDate() + (w - 1) * 7);
+  monday.setHours(12);
+  return `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, "0")}`;
 }
 
 function aggregateBenchmarkRevparByMonth(
   rows: BenchmarkRow[],
-  allowedMonthKeys: Set<string>
+  allowedMonthKeys: Set<string>,
 ): Map<string, number> {
   const acc = new Map<string, { sum: number; n: number }>();
   for (const r of rows) {
     if (r.year == null || r.week_number == null) continue;
     const v = Number(r.benchmark_revpar);
     if (!Number.isFinite(v)) continue;
-    const mk = getMonthKeyFromIsoWeek(r.year, r.week_number);
+    const mk = getMonthKeyFromIsoWeekStart(r.year, r.week_number);
     if (!allowedMonthKeys.has(mk)) continue;
     const b = acc.get(mk) ?? { sum: 0, n: 0 };
     b.sum += v;
@@ -313,7 +565,13 @@ export default function DashboardPage() {
   const [benchmarkRows, setBenchmarkRows] = useState<BenchmarkRow[]>([]);
   const [benchmarkLoading, setBenchmarkLoading] = useState(false);
 
-  const [timeRange, setTimeRange] = useState<"year" | "all">("year");
+  const [periodMode, setPeriodMode] = useState<PeriodMode>("cytd");
+  const [coverage, setCoverage] = useState<CoverageRow[]>([]);
+  const [covLoading, setCovLoading] = useState(false);
+  const [pmByProperty, setPmByProperty] = useState<Map<string, string>>(
+    () => new Map(),
+  );
+  const periodDefaultedRef = useRef(false);
 
   const [surveyPendingCount, setSurveyPendingCount] = useState<number | null>(
     null
@@ -329,6 +587,7 @@ export default function DashboardPage() {
   const [dataGapsLoading, setDataGapsLoading] = useState(false);
 
   const currentYear = new Date().getFullYear();
+  const lcm = useMemo(() => lastCompletedCalendarMonth(), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -534,13 +793,16 @@ export default function DashboardPage() {
       setPmRows([]);
       setBookings([]);
       setBenchmarkRows([]);
+      setCoverage([]);
+      setPmByProperty(new Map());
       return;
     }
 
     setPmLoading(true);
     setBookingsLoading(true);
+    setCovLoading(true);
 
-    const [pmRes, bookRes] = await Promise.all([
+    const [pmRes, bookRes, covRes] = await Promise.all([
       supabase
       .from("owner_pm_relationships")
       .select(
@@ -562,7 +824,13 @@ export default function DashboardPage() {
       supabase
         .from("bookings")
         .select(
-          "property_id, block_type, gross_revenue, check_in, check_out"
+          "property_id, block_type, gross_revenue, check_in, check_out, status, is_planned_owner_stay",
+        )
+        .in("property_id", propertyIds),
+      supabase
+        .from("property_coverage_months")
+        .select(
+          "property_id, pm_id, coverage_year, coverage_month, data_complete, admin_override",
         )
         .in("property_id", propertyIds),
     ]);
@@ -570,14 +838,21 @@ export default function DashboardPage() {
     if (pmRes.error) {
       console.error(pmRes.error);
       setPmRows([]);
+      setPmByProperty(new Map());
     } else {
       const latestByProperty = new Map<string, OwnerPmSummaryRow>();
+      const pmMap = new Map<string, string>();
       for (const row of (pmRes.data ?? []) as OwnerPmSummaryRow[]) {
         const pid = String(row.property_id ?? "");
-        if (!pid || latestByProperty.has(pid)) continue;
+        if (!pid) continue;
+        if (!pmMap.has(pid)) {
+          pmMap.set(pid, String(row.pm_id ?? ""));
+        }
+        if (latestByProperty.has(pid)) continue;
         latestByProperty.set(pid, row);
       }
       setPmRows([...latestByProperty.values()]);
+      setPmByProperty(pmMap);
     }
     setPmLoading(false);
 
@@ -588,6 +863,14 @@ export default function DashboardPage() {
       setBookings((bookRes.data as BookingRow[]) ?? []);
     }
     setBookingsLoading(false);
+
+    if (covRes.error) {
+      console.error(covRes.error);
+      setCoverage([]);
+    } else {
+      setCoverage((covRes.data as CoverageRow[]) ?? []);
+    }
+    setCovLoading(false);
   }, [properties, supabase]);
 
   const loadBenchmarks = useCallback(async () => {
@@ -600,7 +883,8 @@ export default function DashboardPage() {
     const { data, error } = await supabase
       .from("market_benchmarks")
       .select("year, week_number, benchmark_revpar")
-      .eq("market_id", mid);
+      .eq("market_id", mid)
+      .eq("source", "airdna_api");
     setBenchmarkLoading(false);
     if (error) {
       console.error(error);
@@ -664,141 +948,218 @@ export default function DashboardPage() {
     };
   }, [properties, supabase]);
 
-  const filteredBookings = useMemo(() => {
-    if (timeRange === "all") return bookings;
-    return bookings.filter((b) => {
-      if (!b.check_in) return false;
-      const y = new Date(b.check_in).getFullYear();
-      return y === currentYear;
-    });
-  }, [bookings, timeRange, currentYear]);
-
-  const pmFeePctByPropertyId = useMemo(() => {
-    const m = new Map<string, number | null>();
-    for (const r of pmRows) {
-      m.set(String(r.property_id), r.pm_fee_pct ?? null);
-    }
-    return m;
-  }, [pmRows]);
-
-  const bookingStats = useMemo(() => {
-    const guest = filteredBookings.filter((b) => isGuestBooking(b.block_type));
-    const totalGuestBookings = guest.length;
-    const totalGrossRevenue = guest.reduce(
-      (s, b) => s + (Number(b.gross_revenue) || 0),
-      0
-    );
-    let totalNetRevenue: number | null = null;
-    if (guest.length > 0) {
-      let allFeesKnown = true;
-      let netSum = 0;
-      for (const b of guest) {
-        const pid = String(b.property_id ?? "");
-        const pctRaw = pid ? pmFeePctByPropertyId.get(pid) : undefined;
-        if (pctRaw == null || Number.isNaN(Number(pctRaw))) {
-          allFeesKnown = false;
-          break;
-        }
-        const pct = Number(pctRaw);
-        const gross = Number(b.gross_revenue) || 0;
-        netSum += gross * (1 - pct / 100);
-      }
-      totalNetRevenue = allFeesKnown ? netSum : null;
-    }
-    const totalNights = guest.reduce(
-      (s, b) =>
-        s + stayNightsFromCheckInOut(b.check_in, b.check_out),
-      0
-    );
-    const avgNightly =
-      totalNights > 0 ? totalGrossRevenue / totalNights : null;
-    const ownerStays = filteredBookings.filter((b) => {
-      const t = (b.block_type ?? "").trim().toLowerCase();
-      return t === "owner_stay" || t === "owner_guest";
-    }).length;
-
+  const periodWindows = useMemo(() => {
+    const cytd = buildCytdWindows(lcm);
+    const lw = buildLtmWindows(lcm);
+    const lfyCurr = fiscalYearMonths(lcm.year - 1);
+    const lfyPrior = fiscalYearMonths(lcm.year - 2);
     return {
-      totalGuestBookings,
-      totalGrossRevenue,
-      totalNetRevenue,
-      totalNights,
-      avgNightly,
-      ownerStays,
-    };
-  }, [filteredBookings, pmFeePctByPropertyId]);
+      cytd: { curr: cytd.current, prior: cytd.prior },
+      ltm: { curr: lw.current, prior: lw.prior },
+      lfy: { curr: lfyCurr, prior: lfyPrior },
+    } as Record<PeriodMode, { curr: CalendarMonth[]; prior: CalendarMonth[] }>;
+  }, [lcm]);
 
-  const performanceRevpar = useMemo(() => {
-    const now = new Date();
-    const curMonths: { key: string; year: number; month: number }[] = [];
-    const prevMonths: { key: string; year: number; month: number }[] = [];
-    for (let i = 11; i >= 0; i -= 1) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      const year = d.getFullYear();
-      const month = d.getMonth() + 1;
-      curMonths.push({
-        key: `${year}-${String(month).padStart(2, "0")}`,
-        year,
-        month,
-      });
-      const pd = new Date(year - 1, month - 1, 1);
-      prevMonths.push({
-        key: `${pd.getFullYear()}-${String(pd.getMonth() + 1).padStart(2, "0")}`,
-        year: pd.getFullYear(),
-        month: pd.getMonth() + 1,
-      });
+  const unionCoverageMap = useMemo(() => {
+    const unionRows: CoverageRow[] = [];
+    for (const p of properties) {
+      const pmId = pmByProperty.get(p.id) ?? "";
+      if (!pmId) continue;
+      unionRows.push(
+        ...coverage.filter(
+          (c) => c.property_id === p.id && c.pm_id === pmId,
+        ),
+      );
     }
+    return buildCoverageMap(unionRows);
+  }, [properties, coverage, pmByProperty]);
 
-    const guestBookings = bookings.filter((b) => isGuestBooking(b.block_type));
-    const ownerBlocks = bookings.filter((b) => {
-      const t = (b.block_type ?? "").trim().toLowerCase();
-      return t === "owner_stay" || t === "owner_guest";
-    });
-
-    function revparFor(months: { key: string; year: number; month: number }[]) {
-      let guestRevenue = 0;
-      let availableNights = 0;
-      for (const m of months) {
-        for (const b of guestBookings) {
-          if (monthKeyFromCheckIn(b.check_in) === m.key) {
-            guestRevenue += Number(b.gross_revenue) || 0;
-          }
-        }
-        let ownerNights = 0;
-        for (const b of ownerBlocks) {
-          ownerNights += countOwnerNightsInMonth(
-            b.check_in,
-            b.check_out,
-            stayNightsFromCheckInOut(b.check_in, b.check_out),
-            m.key
-          );
-        }
-        const dim = daysInCalendarMonth(m.year, m.month);
-        availableNights += Math.max(0, dim - ownerNights);
+  const coverageInclusionByMode = useMemo(() => {
+    type Rec = {
+      currIncluded: number;
+      priorIncluded: number;
+      incompleteMonthsPrior: CalendarMonth[];
+    };
+    const out: Record<PeriodMode, Rec> = {
+      cytd: { currIncluded: 0, priorIncluded: 0, incompleteMonthsPrior: [] },
+      ltm: { currIncluded: 0, priorIncluded: 0, incompleteMonthsPrior: [] },
+      lfy: { currIncluded: 0, priorIncluded: 0, incompleteMonthsPrior: [] },
+    };
+    for (const mode of ["cytd", "ltm", "lfy"] as PeriodMode[]) {
+      const { curr, prior } = periodWindows[mode];
+      let currIncluded = 0;
+      let priorIncluded = 0;
+      for (const p of properties) {
+        const pmId = pmByProperty.get(p.id) ?? "";
+        if (!pmId) continue;
+        if (propertyPeriodComplete(p.id, pmId, curr, coverage)) currIncluded++;
+        if (propertyPeriodComplete(p.id, pmId, prior, coverage)) priorIncluded++;
       }
-      return availableNights > 0 ? guestRevenue / availableNights : null;
+      out[mode] = {
+        currIncluded,
+        priorIncluded,
+        incompleteMonthsPrior: coverageHoles(unionCoverageMap, prior),
+      };
     }
+    return out;
+  }, [properties, coverage, periodWindows, pmByProperty, unionCoverageMap]);
 
-    const currentRevpar = revparFor(curMonths);
-    const priorRevpar = revparFor(prevMonths);
-    const priorKeySet = new Set(prevMonths.map((m) => m.key));
-    const priorMonthsWithData = new Set(
-      bookings
-        .map((b) => monthKeyFromCheckIn(b.check_in))
-        .filter((k): k is string => Boolean(k && priorKeySet.has(k)))
-    ).size;
-    const hasPriorData = priorMonthsWithData > 0 && priorRevpar != null;
-    const pct =
-      hasPriorData && priorRevpar !== 0 && currentRevpar != null
-        ? ((currentRevpar - priorRevpar) / priorRevpar) * 100
-        : null;
-    const estimated = hasPriorData && priorMonthsWithData < 6;
+  useEffect(() => {
+    periodDefaultedRef.current = false;
+  }, [properties.length]);
+
+  useEffect(() => {
+    if (covLoading || properties.length === 0) return;
+    if (periodDefaultedRef.current) return;
+    periodDefaultedRef.current = true;
+    const order: PeriodMode[] = ["cytd", "ltm", "lfy"];
+    const ok = order.find((m) => {
+      if (m === "cytd") {
+        const { curr, prior } = periodWindows.cytd;
+        if (curr.length === 0) return false;
+        const anyCompleteCurr = curr.some((mo) => {
+          const r = unionCoverageMap.get(monthKey(mo.year, mo.month));
+          return r?.data_complete || r?.admin_override;
+        });
+        if (!anyCompleteCurr) return false;
+        return coverageHoles(unionCoverageMap, prior).length === 0;
+      }
+      return coverageInclusionByMode[m].currIncluded > 0;
+    });
+    if (ok) setPeriodMode(ok);
+  }, [
+    covLoading,
+    properties.length,
+    periodWindows.cytd,
+    unionCoverageMap,
+    coverageInclusionByMode,
+  ]);
+
+  const toggleDisabled = useCallback(
+    (mode: PeriodMode): { locked: boolean; tooltip: string } => {
+      const L = coverageInclusionByMode[mode];
+      if (!properties.length) {
+        return { locked: true, tooltip: "No properties on file." };
+      }
+      if (mode === "cytd") {
+        const { curr, prior } = periodWindows.cytd;
+        if (curr.length === 0) {
+          return {
+            locked: true,
+            tooltip: `No data yet for ${currentYear}. Upload your first statement to unlock.`,
+          };
+        }
+        const anyCompleteCurr = curr.some((m) => {
+          const r = unionCoverageMap.get(monthKey(m.year, m.month));
+          return r?.data_complete || r?.admin_override;
+        });
+        if (!anyCompleteCurr) {
+          return {
+            locked: true,
+            tooltip: `No data yet for ${currentYear}. Upload your first statement to unlock.`,
+          };
+        }
+        const priorHoles = coverageHoles(unionCoverageMap, prior);
+        if (priorHoles.length > 0) {
+          const g = priorHoles[0];
+          return {
+            locked: true,
+            tooltip: `${formatMonthHeading(g.year, g.month)} data needed to compare. Upload historical statements to unlock.`,
+          };
+        }
+      }
+      if (L.currIncluded === 0) {
+        return {
+          locked: true,
+          tooltip: "Waiting for uploaded months to be marked complete.",
+        };
+      }
+      return { locked: false, tooltip: "" };
+    },
+    [
+      coverageInclusionByMode,
+      properties.length,
+      periodWindows.cytd,
+      unionCoverageMap,
+      currentYear,
+    ],
+  );
+
+  const inclusionNow = coverageInclusionByMode[periodMode];
+  const priorPeriodComplete =
+    coverageHoles(unionCoverageMap, periodWindows[periodMode].prior).length ===
+    0;
+  const priorDeltaTooltip =
+    !priorPeriodComplete && inclusionNow.incompleteMonthsPrior[0]
+      ? `Prior-year comparison hidden — ${formatMonthHeading(inclusionNow.incompleteMonthsPrior[0].year, inclusionNow.incompleteMonthsPrior[0].month)} data incomplete.`
+      : !priorPeriodComplete
+        ? "Prior-year comparison hidden — prior period data incomplete."
+        : "";
+
+  const performanceSummary = useMemo(() => {
+    const { curr, prior } = periodWindows[periodMode];
+    const current = computePeriodStats(bookings, curr);
+    const priorStats = computePeriodStats(bookings, prior);
     return {
-      currentRevpar,
-      pct,
-      estimated,
-      hasPriorData,
+      current,
+      prior: priorStats,
+      deltas: {
+        revpar: priorPeriodComplete
+          ? pctDelta(current.revpar, priorStats.revpar)
+          : null,
+        guestBookings: priorPeriodComplete
+          ? pctDelta(current.guestBookings, priorStats.guestBookings)
+          : null,
+        grossRevenue: priorPeriodComplete
+          ? pctDelta(current.grossRevenue, priorStats.grossRevenue)
+          : null,
+        avgNightly: priorPeriodComplete
+          ? pctDelta(current.avgNightly, priorStats.avgNightly)
+          : null,
+      },
     };
-  }, [bookings]);
+  }, [bookings, periodMode, periodWindows, priorPeriodComplete]);
+
+  const benchmarkAllowedMonthKeys = useMemo(() => {
+    const allowed = new Set<string>();
+    for (const p of properties) {
+      const pmId = pmByProperty.get(p.id) ?? "";
+      if (!pmId) continue;
+      for (const c of coverage) {
+        if (c.property_id !== p.id || c.pm_id !== pmId) continue;
+        if (!(c.data_complete || c.admin_override)) continue;
+        allowed.add(
+          monthKey(Number(c.coverage_year), Number(c.coverage_month)),
+        );
+      }
+    }
+    return allowed;
+  }, [properties, coverage, pmByProperty]);
+
+  const revparChartData = useMemo(() => {
+    const chartBuckets = getLast12CompleteMonthBuckets(lcm);
+    const benchmarkByMonth = aggregateBenchmarkRevparByMonth(
+      benchmarkRows,
+      benchmarkAllowedMonthKeys,
+    );
+
+    return chartBuckets.map(({ monthKey: mk, monthLabel, year, month }) => {
+      const monthStats = computePeriodStats(bookings, [{ year, month }]);
+      const bench = benchmarkByMonth.get(mk);
+      const monthAllowed = benchmarkAllowedMonthKeys.has(mk);
+      const benchmarkRevpar =
+        monthAllowed && bench !== undefined && Number.isFinite(bench)
+          ? bench
+          : null;
+
+      return {
+        monthKey: mk,
+        monthLabel,
+        propertyRevpar: monthStats.revpar,
+        benchmarkRevpar,
+      };
+    });
+  }, [benchmarkRows, bookings, benchmarkAllowedMonthKeys, lcm]);
 
   const groupedPmRows = useMemo<GroupedPmSummary[]>(() => {
     const byPm = new Map<string, GroupedPmSummary>();
@@ -844,56 +1205,6 @@ export default function DashboardPage() {
       a.companyName.localeCompare(b.companyName)
     );
   }, [pmRows]);
-
-  const revparChartData = useMemo(() => {
-    const buckets = getLast12MonthBuckets();
-    const keySet = new Set(buckets.map((b) => b.monthKey));
-    const benchmarkByMonth = aggregateBenchmarkRevparByMonth(
-      benchmarkRows,
-      keySet
-    );
-
-    const guestBookings = bookings.filter((b) => isGuestBooking(b.block_type));
-    const ownerBlocks = bookings.filter((b) => {
-      const t = (b.block_type ?? "").trim().toLowerCase();
-      return t === "owner_stay" || t === "owner_guest";
-    });
-
-    return buckets.map(({ monthKey, monthLabel, year, month }) => {
-      let guestRevenue = 0;
-      for (const b of guestBookings) {
-        if (monthKeyFromCheckIn(b.check_in) === monthKey) {
-          guestRevenue += Number(b.gross_revenue) || 0;
-        }
-      }
-
-      let ownerNightsInMonth = 0;
-      for (const b of ownerBlocks) {
-        ownerNightsInMonth += countOwnerNightsInMonth(
-          b.check_in,
-          b.check_out,
-          stayNightsFromCheckInOut(b.check_in, b.check_out),
-          monthKey
-        );
-      }
-
-      const dim = daysInCalendarMonth(year, month);
-      const availableNights = Math.max(0, dim - ownerNightsInMonth);
-      const propertyRevpar =
-        availableNights > 0 ? guestRevenue / availableNights : null;
-
-      const bench = benchmarkByMonth.get(monthKey);
-      const benchmarkRevpar =
-        bench !== undefined && Number.isFinite(bench) ? bench : null;
-
-      return {
-        monthKey,
-        monthLabel,
-        propertyRevpar,
-        benchmarkRevpar,
-      };
-    });
-  }, [benchmarkRows, bookings]);
 
   const hasBenchmarkSeries = useMemo(
     () => revparChartData.some((d) => d.benchmarkRevpar != null),
@@ -1019,73 +1330,73 @@ export default function DashboardPage() {
           >
             Analytics →
           </Link>
-          <div className="inline-flex rounded-lg border border-zinc-200 p-0.5 dark:border-zinc-700">
-            <button
-              type="button"
-              onClick={() => setTimeRange("year")}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                timeRange === "year"
-                  ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-                  : "text-zinc-600 hover:bg-zinc-50 dark:text-zinc-400 dark:hover:bg-zinc-800"
-              }`}
-            >
-              {currentYear}
-            </button>
-            <button
-              type="button"
-              onClick={() => setTimeRange("all")}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                timeRange === "all"
-                  ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-                  : "text-zinc-600 hover:bg-zinc-50 dark:text-zinc-400 dark:hover:bg-zinc-800"
-              }`}
-            >
-              All time
-            </button>
+          <div className="inline-flex flex-wrap gap-2">
+            {(Object.keys(PERIOD_TOGGLE_DEF) as PeriodMode[]).map((mode) => {
+              const d = toggleDisabled(mode);
+              const def = PERIOD_TOGGLE_DEF[mode];
+              const selected = periodMode === mode;
+              return (
+                <span key={mode} title={d.locked ? d.tooltip : def.label}>
+                  <button
+                    type="button"
+                    disabled={d.locked}
+                    onClick={() => {
+                      if (!d.locked) setPeriodMode(mode);
+                    }}
+                    className={[
+                      "rounded-lg border px-3 py-1.5 text-xs font-semibold uppercase tracking-wide",
+                      d.locked
+                        ? "cursor-not-allowed border-zinc-200 bg-zinc-100 text-zinc-400 opacity-70 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-500"
+                        : selected
+                          ? "border-emerald-600 bg-emerald-600 text-white dark:border-emerald-500 dark:bg-emerald-600"
+                          : "border-zinc-200 bg-white text-zinc-800 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50 dark:hover:bg-zinc-900",
+                    ].join(" ")}
+                  >
+                    {def.shortLabel}
+                  </button>
+                </span>
+              );
+            })}
           </div>
         </div>
 
         {properties.length === 0 ? (
           <p className="mt-3 text-sm text-zinc-500">Loading properties…</p>
-        ) : bookingsLoading ? (
+        ) : bookingsLoading || covLoading ? (
           <p className="mt-3 text-sm text-zinc-500">Loading bookings…</p>
+        ) : inclusionNow.currIncluded === 0 ? (
+          <p className="mt-3 text-sm text-zinc-500">
+            Upload complete statements to unlock performance metrics for{" "}
+            {PERIOD_TOGGLE_DEF[periodMode].shortLabel}.
+          </p>
         ) : (
           <>
           <dl className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
             <div className="rounded-lg bg-zinc-50 p-3 dark:bg-zinc-900/50">
               <dt className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                RevPAR (trailing 12m)
+                RevPAR ({PERIOD_TOGGLE_DEF[periodMode].shortLabel})
               </dt>
               <dd className="mt-1 text-2xl font-semibold tabular-nums text-zinc-900 dark:text-zinc-50">
-                {performanceRevpar.currentRevpar != null
-                  ? formatMoney(performanceRevpar.currentRevpar)
+                {performanceSummary.current.revpar != null
+                  ? formatMoney(performanceSummary.current.revpar)
                   : "—"}
               </dd>
-              {performanceRevpar.pct != null ? (
-                <p className="mt-0.5 text-xs">
-                  {performanceRevpar.estimated ? (
-                    <span className="text-zinc-500">~ </span>
-                  ) : null}
-                  <span
-                    className={
-                      performanceRevpar.pct >= 0
-                        ? "text-emerald-700 dark:text-emerald-300"
-                        : "text-red-700 dark:text-red-300"
-                    }
-                  >
-                    {performanceRevpar.pct >= 0 ? "↑" : "↓"}{" "}
-                    {Math.abs(performanceRevpar.pct).toFixed(1)}%
-                  </span>
-                </p>
-              ) : null}
+              <DeltaBadge
+                pct={performanceSummary.deltas.revpar}
+                tooltip={priorDeltaTooltip}
+              />
             </div>
             <div className="rounded-lg bg-zinc-50 p-3 dark:bg-zinc-900/50">
               <dt className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
                 Guest bookings
               </dt>
               <dd className="mt-1 text-2xl font-semibold tabular-nums text-zinc-900 dark:text-zinc-50">
-                {bookingStats.totalGuestBookings}
+                {performanceSummary.current.guestBookings}
               </dd>
+              <DeltaBadge
+                pct={performanceSummary.deltas.guestBookings}
+                tooltip={priorDeltaTooltip}
+              />
               <p className="mt-0.5 text-xs text-zinc-500">
                 OTA / PM-direct stays
               </p>
@@ -1095,36 +1406,31 @@ export default function DashboardPage() {
                 Gross revenue
               </dt>
               <dd className="mt-1 text-2xl font-semibold tabular-nums text-zinc-900 dark:text-zinc-50">
-                {formatMoney(bookingStats.totalGrossRevenue)}
+                {formatMoney(performanceSummary.current.grossRevenue)}
               </dd>
+              <DeltaBadge
+                pct={performanceSummary.deltas.grossRevenue}
+                tooltip={priorDeltaTooltip}
+              />
               <p className="mt-0.5 text-xs text-zinc-500">
                 Guest bookings only
               </p>
-              {bookingStats.totalNetRevenue != null ? (
-                <>
-                  <dt className="mt-3 text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                    Net revenue
-                  </dt>
-                  <dd className="mt-1 text-lg font-semibold tabular-nums text-zinc-900 dark:text-zinc-50">
-                    {formatMoney(bookingStats.totalNetRevenue)}
-                  </dd>
-                  <p className="mt-0.5 text-xs text-zinc-500">
-                    After PM fee % (same stays)
-                  </p>
-                </>
-              ) : null}
             </div>
             <div className="rounded-lg bg-zinc-50 p-3 dark:bg-zinc-900/50">
               <dt className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
                 Avg nightly rate
               </dt>
               <dd className="mt-1 text-2xl font-semibold tabular-nums text-zinc-900 dark:text-zinc-50">
-                {bookingStats.avgNightly != null
-                  ? formatMoney(bookingStats.avgNightly)
+                {performanceSummary.current.avgNightly != null
+                  ? formatMoney(performanceSummary.current.avgNightly)
                   : "—"}
               </dd>
+              <DeltaBadge
+                pct={performanceSummary.deltas.avgNightly}
+                tooltip={priorDeltaTooltip}
+              />
               <p className="mt-0.5 text-xs text-zinc-500">
-                Gross ÷ nights (guest)
+                Gross ÷ prorated nights (guest)
               </p>
             </div>
             <div className="rounded-lg bg-zinc-50 p-3 dark:bg-zinc-900/50">
@@ -1132,16 +1438,16 @@ export default function DashboardPage() {
                 Owner & Guest Stays
               </dt>
               <dd className="mt-1 text-2xl font-semibold tabular-nums text-zinc-900 dark:text-zinc-50">
-                {bookingStats.ownerStays}
+                {performanceSummary.current.ownerStays}
               </dd>
               <p className="mt-0.5 text-xs text-zinc-500">
                 Personal-use and owner guest blocks
               </p>
             </div>
           </dl>
-          {performanceRevpar.estimated ? (
+          {!priorPeriodComplete && priorDeltaTooltip ? (
             <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-              ~ Estimated from partial prior year data
+              {priorDeltaTooltip}
             </p>
           ) : null}
           </>
@@ -1153,8 +1459,10 @@ export default function DashboardPage() {
           RevPAR trend
         </h2>
         <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-          Last 12 months — guest OTA / PM-direct revenue vs. nights available
-          (calendar days minus owner stay and owner guest nights).
+          Last 12 complete months — guest OTA / PM-direct revenue vs. nights
+          available (calendar days minus planned owner stays, owner guest, and
+          maintenance). Market benchmark shown only for months with complete
+          uploads.
         </p>
         {properties.length === 0 ? (
           <p className="mt-3 text-sm text-zinc-500">Loading properties…</p>
