@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import PmManagerCard from "@/components/PmManagerCard";
+import { PerformanceSummaryCards } from "@/components/performance-summary-cards";
+import { computePeriodStats, pctDelta } from "@/lib/period-stats";
 import {
   CartesianGrid,
   Line,
@@ -295,80 +297,6 @@ function propertyPeriodComplete(
   return coverageHoles(buildCoverageMap(rows), months).length === 0;
 }
 
-type PeriodStats = {
-  revpar: number | null;
-  guestBookings: number;
-  grossRevenue: number;
-  avgNightly: number | null;
-  ownerStays: number;
-};
-
-function computePeriodStats(
-  bookings: BookingRow[],
-  months: CalendarMonth[],
-): PeriodStats {
-  let grossRevenue = 0;
-  let guestBookedNights = 0;
-  let availableNights = 0;
-  const guestBookingKeys = new Set<string>();
-  const ownerStayKeys = new Set<string>();
-
-  for (const ym of months) {
-    const dim = daysInCalendarMonth(ym.year, ym.month);
-    let availReduction = 0;
-
-    for (const b of bookings) {
-      if (String(b.status ?? "").toLowerCase() === "cancelled") continue;
-      const bt = String(b.block_type ?? "").trim();
-      const overlapDays = nightsIntersectCalendarMonthHalfOpenStay(
-        b.check_in,
-        b.check_out,
-        ym.year,
-        ym.month,
-      );
-      if (overlapDays <= 0) continue;
-
-      if (GUEST_BLOCK_TYPES.has(bt)) {
-        if (!checkInStrictlyBeforeToday(b.check_in)) continue;
-        const totalNights = totalHalfOpenStayNights(b.check_in, b.check_out);
-        if (totalNights <= 0) continue;
-        const gross = Number(b.gross_revenue != null ? b.gross_revenue : NaN) || 0;
-        guestBookedNights += overlapDays;
-        grossRevenue += (gross * overlapDays) / totalNights;
-        guestBookingKeys.add(
-          `${b.property_id}:${b.check_in}:${b.check_out}:${bt}`,
-        );
-      }
-
-      if (reducesAvailableDenominator(b, bt)) {
-        availReduction += overlapDays;
-      }
-
-      const btLower = bt.toLowerCase();
-      if (btLower === "owner_stay" || btLower === "owner_guest") {
-        ownerStayKeys.add(
-          `${b.property_id}:${b.check_in}:${b.check_out}:${btLower}`,
-        );
-      }
-    }
-
-    availableNights += Math.max(0, dim - Math.min(availReduction, dim));
-  }
-
-  return {
-    revpar: availableNights > 0 ? grossRevenue / availableNights : null,
-    guestBookings: guestBookingKeys.size,
-    grossRevenue,
-    avgNightly: guestBookedNights > 0 ? grossRevenue / guestBookedNights : null,
-    ownerStays: ownerStayKeys.size,
-  };
-}
-
-function pctDelta(current: number | null, prior: number | null): number | null {
-  if (current == null || prior == null || prior === 0) return null;
-  return ((current - prior) / prior) * 100;
-}
-
 /** Formats a Postgres `date` or timestamptz string for display. Date-only `YYYY-MM-DD` is treated as a calendar day in the local timezone (avoids UTC midnight shifting the day). */
 function formatDate(iso: string | null | undefined) {
   if (!iso) return "—";
@@ -401,14 +329,6 @@ function formatDate(iso: string | null | undefined) {
   });
 }
 
-function formatMoney(n: number) {
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  }).format(n);
-}
-
 function formatMoneyCompact(n: number) {
   return new Intl.NumberFormat(undefined, {
     style: "currency",
@@ -417,59 +337,35 @@ function formatMoneyCompact(n: number) {
   }).format(n);
 }
 
-/** Last 12 complete calendar months ending at lcm, oldest first. */
-function getLast12CompleteMonthBuckets(lcm: CalendarMonth): {
+/** Month buckets for chart x-axis, oldest first. */
+function monthsToChartBuckets(months: CalendarMonth[]): {
   monthKey: string;
   monthLabel: string;
   year: number;
   month: number;
 }[] {
-  const out: {
-    monthKey: string;
-    monthLabel: string;
-    year: number;
-    month: number;
-  }[] = [];
-  let y = lcm.year;
-  let m = lcm.month;
-  for (let i = 0; i < 12; i++) {
-    out.unshift({
-      monthKey: monthKey(y, m),
-      monthLabel: new Date(y, m - 1, 1).toLocaleDateString(undefined, {
-        month: "short",
-        year: "numeric",
-      }),
-      year: y,
-      month: m,
-    });
-    const prev = shiftMonths(y, m, -1);
-    y = prev.year;
-    m = prev.month;
-  }
-  return out;
+  return months.map(({ year, month }) => ({
+    monthKey: monthKey(year, month),
+    monthLabel: new Date(year, month - 1, 1).toLocaleDateString(undefined, {
+      month: "short",
+      year: "numeric",
+    }),
+    year,
+    month,
+  }));
 }
 
-function DeltaBadge({
-  pct,
-  tooltip,
-}: {
-  pct: number | null;
-  tooltip?: string;
-}) {
-  if (pct == null) return null;
-  return (
-    <p className="mt-0.5 text-xs" title={tooltip}>
-      <span
-        className={
-          pct >= 0
-            ? "text-emerald-700 dark:text-emerald-300"
-            : "text-red-700 dark:text-red-300"
-        }
-      >
-        {pct >= 0 ? "↑" : "↓"} {Math.abs(pct).toFixed(1)}%
-      </span>
-    </p>
-  );
+function revparTrendSubtitle(mode: PeriodMode, lcm: CalendarMonth): string {
+  const base =
+    " — guest OTA / PM-direct revenue vs. nights available (calendar days minus planned owner stays, owner guest, and maintenance). Market benchmark shown only for months with complete uploads.";
+  switch (mode) {
+    case "cytd":
+      return `Jan ${lcm.year} – ${formatMonthHeading(lcm.year, lcm.month)} vs prior year same months${base}`;
+    case "ltm":
+      return `Last 12 complete months vs prior 12 months${base}`;
+    case "lfy":
+      return `${lcm.year - 1} full calendar year${base}`;
+  }
 }
 
 function daysInCalendarMonth(year: number, month1Based: number): number {
@@ -1106,14 +1002,14 @@ export default function DashboardPage() {
       current,
       prior: priorStats,
       deltas: {
+        grossRevenue: priorPeriodComplete
+          ? pctDelta(current.grossRevenue, priorStats.grossRevenue)
+          : null,
         revpar: priorPeriodComplete
           ? pctDelta(current.revpar, priorStats.revpar)
           : null,
-        guestBookings: priorPeriodComplete
-          ? pctDelta(current.guestBookings, priorStats.guestBookings)
-          : null,
-        grossRevenue: priorPeriodComplete
-          ? pctDelta(current.grossRevenue, priorStats.grossRevenue)
+        occ: priorPeriodComplete
+          ? pctDelta(current.occ, priorStats.occ)
           : null,
         avgNightly: priorPeriodComplete
           ? pctDelta(current.avgNightly, priorStats.avgNightly)
@@ -1139,29 +1035,55 @@ export default function DashboardPage() {
   }, [properties, coverage, pmByProperty]);
 
   const revparChartData = useMemo(() => {
-    const chartBuckets = getLast12CompleteMonthBuckets(lcm);
+    const { curr, prior } = periodWindows[periodMode];
+    const chartBuckets = monthsToChartBuckets(curr);
+    const periodMonthKeys = new Set(curr.map((m) => monthKey(m.year, m.month)));
+    const benchmarkAllowedForPeriod = new Set(
+      [...benchmarkAllowedMonthKeys].filter((k) => periodMonthKeys.has(k)),
+    );
     const benchmarkByMonth = aggregateBenchmarkRevparByMonth(
       benchmarkRows,
-      benchmarkAllowedMonthKeys,
+      benchmarkAllowedForPeriod,
     );
 
-    return chartBuckets.map(({ monthKey: mk, monthLabel, year, month }) => {
+    return chartBuckets.map(({ monthKey: mk, monthLabel, year, month }, idx) => {
       const monthStats = computePeriodStats(bookings, [{ year, month }]);
       const bench = benchmarkByMonth.get(mk);
-      const monthAllowed = benchmarkAllowedMonthKeys.has(mk);
+      const monthAllowed = benchmarkAllowedForPeriod.has(mk);
       const benchmarkRevpar =
         monthAllowed && bench !== undefined && Number.isFinite(bench)
           ? bench
           : null;
 
+      let priorPropertyRevpar: number | null = null;
+      if (priorPeriodComplete && prior[idx]) {
+        const priorMonth = prior[idx];
+        priorPropertyRevpar = computePeriodStats(bookings, [priorMonth]).revpar;
+      }
+
       return {
         monthKey: mk,
         monthLabel,
         propertyRevpar: monthStats.revpar,
+        priorPropertyRevpar,
         benchmarkRevpar,
       };
     });
-  }, [benchmarkRows, bookings, benchmarkAllowedMonthKeys, lcm]);
+  }, [
+    benchmarkRows,
+    bookings,
+    benchmarkAllowedMonthKeys,
+    periodMode,
+    periodWindows,
+    priorPeriodComplete,
+  ]);
+
+  const hasPriorRevparSeries = useMemo(
+    () =>
+      priorPeriodComplete &&
+      revparChartData.some((d) => d.priorPropertyRevpar != null),
+    [revparChartData, priorPeriodComplete],
+  );
 
   const groupedPmRows = useMemo<GroupedPmSummary[]>(() => {
     const byPm = new Map<string, GroupedPmSummary>();
@@ -1342,34 +1264,35 @@ export default function DashboardPage() {
           >
             Analytics →
           </Link>
-          <div className="inline-flex flex-wrap gap-2">
-            {(Object.keys(PERIOD_TOGGLE_DEF) as PeriodMode[]).map((mode) => {
-              const d = toggleDisabled(mode);
-              const def = PERIOD_TOGGLE_DEF[mode];
-              const selected = periodMode === mode;
-              return (
-                <span key={mode} title={d.locked ? d.tooltip : def.label}>
-                  <button
-                    type="button"
-                    disabled={d.locked}
-                    onClick={() => {
-                      if (!d.locked) setPeriodMode(mode);
-                    }}
-                    className={[
-                      "rounded-lg border px-3 py-1.5 text-xs font-semibold uppercase tracking-wide",
-                      d.locked
-                        ? "cursor-not-allowed border-zinc-200 bg-zinc-100 text-zinc-400 opacity-70 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-500"
-                        : selected
-                          ? "border-emerald-600 bg-emerald-600 text-white dark:border-emerald-500 dark:bg-emerald-600"
-                          : "border-zinc-200 bg-white text-zinc-800 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50 dark:hover:bg-zinc-900",
-                    ].join(" ")}
-                  >
-                    {def.shortLabel}
-                  </button>
-                </span>
-              );
-            })}
-          </div>
+        </div>
+
+        <div className="mt-4 inline-flex flex-wrap gap-2">
+          {(Object.keys(PERIOD_TOGGLE_DEF) as PeriodMode[]).map((mode) => {
+            const d = toggleDisabled(mode);
+            const def = PERIOD_TOGGLE_DEF[mode];
+            const selected = periodMode === mode;
+            return (
+              <span key={mode} title={d.locked ? d.tooltip : def.label}>
+                <button
+                  type="button"
+                  disabled={d.locked}
+                  onClick={() => {
+                    if (!d.locked) setPeriodMode(mode);
+                  }}
+                  className={[
+                    "rounded-lg border px-3 py-1.5 text-xs font-semibold uppercase tracking-wide",
+                    d.locked
+                      ? "cursor-not-allowed border-zinc-200 bg-zinc-100 text-zinc-400 opacity-70 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-500"
+                      : selected
+                        ? "border-emerald-600 bg-emerald-600 text-white dark:border-emerald-500 dark:bg-emerald-600"
+                        : "border-zinc-200 bg-white text-zinc-800 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50 dark:hover:bg-zinc-900",
+                  ].join(" ")}
+                >
+                  {def.shortLabel}
+                </button>
+              </span>
+            );
+          })}
         </div>
 
         {properties.length === 0 ? (
@@ -1382,87 +1305,18 @@ export default function DashboardPage() {
             {PERIOD_TOGGLE_DEF[periodMode].shortLabel}.
           </p>
         ) : (
-          <>
-          <dl className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-            <div className="rounded-lg bg-zinc-50 p-3 dark:bg-zinc-900/50">
-              <dt className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                RevPAR ({PERIOD_TOGGLE_DEF[periodMode].shortLabel})
-              </dt>
-              <dd className="mt-1 text-2xl font-semibold tabular-nums text-zinc-900 dark:text-zinc-50">
-                {performanceSummary.current.revpar != null
-                  ? formatMoney(performanceSummary.current.revpar)
-                  : "—"}
-              </dd>
-              <DeltaBadge
-                pct={performanceSummary.deltas.revpar}
-                tooltip={priorDeltaTooltip}
-              />
-            </div>
-            <div className="rounded-lg bg-zinc-50 p-3 dark:bg-zinc-900/50">
-              <dt className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                Guest bookings
-              </dt>
-              <dd className="mt-1 text-2xl font-semibold tabular-nums text-zinc-900 dark:text-zinc-50">
-                {performanceSummary.current.guestBookings}
-              </dd>
-              <DeltaBadge
-                pct={performanceSummary.deltas.guestBookings}
-                tooltip={priorDeltaTooltip}
-              />
-              <p className="mt-0.5 text-xs text-zinc-500">
-                OTA / PM-direct stays
-              </p>
-            </div>
-            <div className="rounded-lg bg-zinc-50 p-3 dark:bg-zinc-900/50">
-              <dt className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                Gross revenue
-              </dt>
-              <dd className="mt-1 text-2xl font-semibold tabular-nums text-zinc-900 dark:text-zinc-50">
-                {formatMoney(performanceSummary.current.grossRevenue)}
-              </dd>
-              <DeltaBadge
-                pct={performanceSummary.deltas.grossRevenue}
-                tooltip={priorDeltaTooltip}
-              />
-              <p className="mt-0.5 text-xs text-zinc-500">
-                Guest bookings only
-              </p>
-            </div>
-            <div className="rounded-lg bg-zinc-50 p-3 dark:bg-zinc-900/50">
-              <dt className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                Avg nightly rate
-              </dt>
-              <dd className="mt-1 text-2xl font-semibold tabular-nums text-zinc-900 dark:text-zinc-50">
-                {performanceSummary.current.avgNightly != null
-                  ? formatMoney(performanceSummary.current.avgNightly)
-                  : "—"}
-              </dd>
-              <DeltaBadge
-                pct={performanceSummary.deltas.avgNightly}
-                tooltip={priorDeltaTooltip}
-              />
-              <p className="mt-0.5 text-xs text-zinc-500">
-                Gross ÷ prorated nights (guest)
-              </p>
-            </div>
-            <div className="rounded-lg bg-zinc-50 p-3 dark:bg-zinc-900/50">
-              <dt className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                Owner & Guest Stays
-              </dt>
-              <dd className="mt-1 text-2xl font-semibold tabular-nums text-zinc-900 dark:text-zinc-50">
-                {performanceSummary.current.ownerStays}
-              </dd>
-              <p className="mt-0.5 text-xs text-zinc-500">
-                Personal-use and owner guest blocks
-              </p>
-            </div>
-          </dl>
-          {!priorPeriodComplete && priorDeltaTooltip ? (
-            <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-              {priorDeltaTooltip}
-            </p>
-          ) : null}
-          </>
+          <div className="mt-4">
+          <PerformanceSummaryCards
+            current={performanceSummary.current}
+            deltas={performanceSummary.deltas}
+            periodLabel={PERIOD_TOGGLE_DEF[periodMode].shortLabel}
+            priorDeltaTooltip={
+              !priorPeriodComplete && priorDeltaTooltip
+                ? priorDeltaTooltip
+                : undefined
+            }
+          />
+          </div>
         )}
       </section>
 
@@ -1471,10 +1325,7 @@ export default function DashboardPage() {
           RevPAR trend
         </h2>
         <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-          Last 12 complete months — guest OTA / PM-direct revenue vs. nights
-          available (calendar days minus planned owner stays, owner guest, and
-          maintenance). Market benchmark shown only for months with complete
-          uploads.
+          {revparTrendSubtitle(periodMode, lcm)}
         </p>
         {properties.length === 0 ? (
           <p className="mt-3 text-sm text-zinc-500">Loading properties…</p>
@@ -1510,6 +1361,7 @@ export default function DashboardPage() {
                       if (!active || !payload?.length) return null;
                       const row = payload[0].payload as {
                         propertyRevpar: number | null;
+                        priorPropertyRevpar: number | null;
                         benchmarkRevpar: number | null;
                       };
                       return (
@@ -1523,6 +1375,14 @@ export default function DashboardPage() {
                               ? formatMoneyCompact(row.propertyRevpar)
                               : "—"}
                           </p>
+                          {hasPriorRevparSeries ? (
+                            <p className="mt-1 text-blue-600 dark:text-blue-400">
+                              Prior period RevPAR:{" "}
+                              {row.priorPropertyRevpar != null
+                                ? formatMoneyCompact(row.priorPropertyRevpar)
+                                : "—"}
+                            </p>
+                          ) : null}
                           {hasBenchmarkSeries ? (
                             <p className="mt-1 text-zinc-600 dark:text-zinc-400">
                               Market benchmark:{" "}
@@ -1540,17 +1400,29 @@ export default function DashboardPage() {
                     dataKey="propertyRevpar"
                     name="Property RevPAR"
                     stroke="#2563eb"
-                    strokeWidth={2}
+                    strokeWidth={2.5}
                     dot={{ r: 3, fill: "#2563eb" }}
                     connectNulls={false}
                   />
+                  {hasPriorRevparSeries ? (
+                    <Line
+                      type="monotone"
+                      dataKey="priorPropertyRevpar"
+                      name="Prior period RevPAR"
+                      stroke="#2563eb"
+                      strokeWidth={1.5}
+                      strokeDasharray="5 4"
+                      dot={false}
+                      connectNulls={false}
+                    />
+                  ) : null}
                   {hasBenchmarkSeries ? (
                     <Line
                       type="monotone"
                       dataKey="benchmarkRevpar"
                       name="Market benchmark"
                       stroke="#a1a1aa"
-                      strokeWidth={2}
+                      strokeWidth={1}
                       strokeDasharray="6 4"
                       dot={false}
                       connectNulls={false}

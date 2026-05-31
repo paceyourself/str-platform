@@ -188,6 +188,7 @@ AirDNA submarket: `airdna-2116` (Rosemary Beach / 30a) for `market_id = '30a'`
 | Webhook handler      | `app/api/webhooks/stripe/route.ts`           |
 | Webhook handlers lib | `lib/stripe-webhook-handlers.ts`             |
 | Billing rates lib    | `lib/billing-rates.ts`                       |
+| Performance Summary cards | `components/performance-summary-cards.tsx` |
 ---
 
 ## Scope Guards — What NOT to Build
@@ -203,7 +204,7 @@ Unless there is an explicit decision in the spec, do not build:
 - **RevPAR Index normalization / bedroom cohort** — Phase 2 refinement.
 - **Quarter toggle** — removed in v1.4. Do not re-add.
 - **All Time toggle** — removed in v1.4. Do not re-add.
-
+- **RevPAR denominator** — always `available_nights`. ADR denominator — always `prorated_booked_nights`. These must never be swapped.
 ---
 
 ## AirDNA Monthly Refresh

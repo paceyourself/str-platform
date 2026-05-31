@@ -8,7 +8,9 @@
  */
 
 import Link from "next/link";
+import { PerformanceSummaryCards } from "@/components/performance-summary-cards";
 import { createClient } from "@/lib/supabase";
+import { computePeriodStats, pctDelta } from "@/lib/period-stats";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CartesianGrid,
@@ -1205,6 +1207,50 @@ export default function AnalyticsPage() {
     incompleteMonthsPrior: inclusionNow.incompleteMonthsPrior,
   };
 
+  const scopedBookingsFlat = useMemo(() => {
+    const ids = new Set(scopedProperties.map((p) => p.id));
+    return bookings.filter((b) => ids.has(String(b.property_id ?? "")));
+  }, [bookings, scopedProperties]);
+
+  const priorPeriodComplete =
+    coverageHoles(unionCoverageMap, periodWindows[periodMode].prior).length ===
+    0;
+
+  const priorDeltaTooltip =
+    !priorPeriodComplete && inclusionNow.incompleteMonthsPrior[0]
+      ? `Prior-year comparison hidden — ${formatMonthHeading(inclusionNow.incompleteMonthsPrior[0].year, inclusionNow.incompleteMonthsPrior[0].month)} data incomplete.`
+      : !priorPeriodComplete
+        ? "Prior-year comparison hidden — prior period data incomplete."
+        : "";
+
+  const performanceSummary = useMemo(() => {
+    const { curr, prior } = periodWindows[periodMode];
+    const current = computePeriodStats(scopedBookingsFlat, curr);
+    const priorStats = computePeriodStats(scopedBookingsFlat, prior);
+    return {
+      current,
+      deltas: {
+        grossRevenue: priorPeriodComplete
+          ? pctDelta(current.grossRevenue, priorStats.grossRevenue)
+          : null,
+        revpar: priorPeriodComplete
+          ? pctDelta(current.revpar, priorStats.revpar)
+          : null,
+        occ: priorPeriodComplete
+          ? pctDelta(current.occ, priorStats.occ)
+          : null,
+        avgNightly: priorPeriodComplete
+          ? pctDelta(current.avgNightly, priorStats.avgNightly)
+          : null,
+      },
+    };
+  }, [
+    scopedBookingsFlat,
+    periodMode,
+    periodWindows,
+    priorPeriodComplete,
+  ]);
+
   const pmTransitionWarning = false;
 
   const toggleDisabled = (
@@ -1355,6 +1401,15 @@ export default function AnalyticsPage() {
 
   /** Revenue tab uses BAR overlay for prior-period revenue dashed line alternative */
   const showRevenueBars = activeKpiTab === "revenue";
+
+  const indexChartYMax = useMemo(() => {
+    if (activeKpiTab !== "index") return 150;
+    const peak = chartDatum.reduce(
+      (max, row) => Math.max(max, row.primary ?? 0),
+      0,
+    );
+    return Math.max(peak, 150);
+  }, [activeKpiTab, chartDatum]);
 
   const kpiTabs: KpiTab[] = [
     "revenue",
@@ -1547,53 +1602,6 @@ export default function AnalyticsPage() {
             Showing: <span className="font-medium text-zinc-700 dark:text-zinc-300">{viewScopeLabel}</span>
           </p>
         </div>
-
-        <div className="space-y-2">
-          <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-            Period comparison
-          </p>
-          <div className="flex flex-wrap gap-2">
-            {(Object.keys(PERIOD_TOGGLE_DEF) as PeriodMode[]).map((mode) => {
-              const d = toggleDisabled(mode);
-              const def = PERIOD_TOGGLE_DEF[mode];
-              const selected = periodMode === mode;
-              const disabled = d.locked;
-              return (
-                <span key={mode} title={disabled ? d.tooltip : def.label}>
-                  <button
-                    type="button"
-                    disabled={disabled}
-                    aria-disabled={disabled}
-                    onClick={() => {
-                      if (!disabled) setPeriodMode(mode);
-                    }}
-                    className={[
-                      "rounded-lg border px-3 py-2 text-xs font-semibold uppercase tracking-wide",
-                      disabled
-                        ? "cursor-not-allowed border-zinc-200 bg-zinc-100 text-zinc-400 opacity-70 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-500"
-                        : selected
-                          ? "border-emerald-600 bg-emerald-600 text-white dark:border-emerald-500 dark:bg-emerald-600"
-                          : "border-zinc-200 bg-white text-zinc-800 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50 dark:hover:bg-zinc-900",
-                    ].join(" ")}
-                  >
-                    {def.shortLabel}
-                  </button>
-                </span>
-              );
-            })}
-          </div>
-          {(periodMode === "ltm" || periodMode === "cytd") &&
-          locksNow.currComplete &&
-          !locksNow.priorComplete ? (
-            <p className="text-xs text-amber-800 dark:text-amber-300">
-              {periodMode === "ltm" ? "LTM" : "CYTD"} comparison pending — uploads still incomplete for the prior mirror window
-              {locksNow.incompleteMonthsPrior[0]
-                ? ` (earliest gap: ${formatMonthHeading(locksNow.incompleteMonthsPrior[0].year, locksNow.incompleteMonthsPrior[0].month)})`
-                : ""}
-              .
-            </p>
-          ) : null}
-        </div>
       </div>
 
       {!locksNow.currComplete ? (
@@ -1634,6 +1642,68 @@ export default function AnalyticsPage() {
           ) : null}
 
           <section className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950 dark:shadow-none">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+              Performance Summary
+            </h2>
+
+            <div className="mt-4 inline-flex flex-wrap gap-2">
+              {(Object.keys(PERIOD_TOGGLE_DEF) as PeriodMode[]).map((mode) => {
+                const d = toggleDisabled(mode);
+                const def = PERIOD_TOGGLE_DEF[mode];
+                const selected = periodMode === mode;
+                const disabled = d.locked;
+                return (
+                  <span key={mode} title={disabled ? d.tooltip : def.label}>
+                    <button
+                      type="button"
+                      disabled={disabled}
+                      aria-disabled={disabled}
+                      onClick={() => {
+                        if (!disabled) setPeriodMode(mode);
+                      }}
+                      className={[
+                        "rounded-lg border px-3 py-1.5 text-xs font-semibold uppercase tracking-wide",
+                        disabled
+                          ? "cursor-not-allowed border-zinc-200 bg-zinc-100 text-zinc-400 opacity-70 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-500"
+                          : selected
+                            ? "border-emerald-600 bg-emerald-600 text-white dark:border-emerald-500 dark:bg-emerald-600"
+                            : "border-zinc-200 bg-white text-zinc-800 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50 dark:hover:bg-zinc-900",
+                      ].join(" ")}
+                    >
+                      {def.shortLabel}
+                    </button>
+                  </span>
+                );
+              })}
+            </div>
+            {(periodMode === "ltm" || periodMode === "cytd") &&
+            locksNow.currComplete &&
+            !locksNow.priorComplete ? (
+              <p className="mt-2 text-xs text-amber-800 dark:text-amber-300">
+                {periodMode === "ltm" ? "LTM" : "CYTD"} comparison pending — uploads still incomplete for the prior mirror window
+                {locksNow.incompleteMonthsPrior[0]
+                  ? ` (earliest gap: ${formatMonthHeading(locksNow.incompleteMonthsPrior[0].year, locksNow.incompleteMonthsPrior[0].month)})`
+                  : ""}
+                .
+              </p>
+            ) : null}
+
+            <div className="mt-4">
+            <PerformanceSummaryCards
+              current={performanceSummary.current}
+              deltas={performanceSummary.deltas}
+              periodLabel={PERIOD_TOGGLE_DEF[periodMode].shortLabel}
+              priorDeltaTooltip={
+                !priorPeriodComplete && priorDeltaTooltip
+                  ? priorDeltaTooltip
+                  : undefined
+              }
+              loading={bookingsLoading || covLoading}
+            />
+            </div>
+          </section>
+
+          <section className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950 dark:shadow-none">
             <div className="mb-4 flex flex-wrap gap-2 border-b border-zinc-200 pb-4 dark:border-zinc-700">
               {kpiTabs.map((tab) => (
                 <button
@@ -1653,6 +1723,11 @@ export default function AnalyticsPage() {
 
             <KpiExplanation active={activeKpiTab} />
 
+            {chartDatum.length === 0 ? (
+              <p className="mt-4 text-sm text-zinc-500 dark:text-zinc-400">
+                Loading chart data…
+              </p>
+            ) : (
             <div className="mt-4 h-72 w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart data={chartDatum}>
@@ -1662,7 +1737,9 @@ export default function AnalyticsPage() {
                     stroke="#71717a"
                     fontSize={11}
                     domain={
-                      activeKpiTab === "index" ? [0, "auto"] : undefined
+                      activeKpiTab === "index"
+                        ? [0, indexChartYMax]
+                        : undefined
                     }
                   />
 
@@ -1670,7 +1747,7 @@ export default function AnalyticsPage() {
                     <>
                       <ReferenceArea
                         y1={105}
-                        y2={220}
+                        y2={indexChartYMax}
                         fill="#22c55e"
                         fillOpacity={0.12}
                       />
@@ -1693,17 +1770,38 @@ export default function AnalyticsPage() {
                     <Bar dataKey="currentRev" name="Current rev" fill="#059669aa" radius={[4, 4, 0, 0]} />
                   ) : (
                     <>
-                      <Line type="monotone" dataKey="primary" name="Current" stroke="#18181b" strokeWidth={2} dot={false}
+                      <Line
+                        type="monotone"
+                        dataKey="primary"
+                        name="Current"
+                        stroke="#2563eb"
+                        strokeWidth={2.5}
+                        dot={false}
                         connectNulls
                       />
-                      <Line type="monotone" dataKey="prior" name="Prior" stroke="#94a3b8" strokeWidth={2}
-                        strokeDasharray="6 5" dot={false} connectNulls
-                      />
+                      {locksNow?.priorComplete ? (
+                        <Line
+                          type="monotone"
+                          dataKey="prior"
+                          name="Prior"
+                          stroke="#2563eb"
+                          strokeWidth={1.5}
+                          strokeDasharray="5 4"
+                          dot={false}
+                          connectNulls
+                        />
+                      ) : null}
                       {!hideBenchmarkSeries &&
                       ["revpar", "occ", "adr"].includes(activeKpiTab) ? (
-                        <Line type="monotone" dataKey="benchmark" name="Market ben."
-                          stroke="#6366f1" strokeDasharray="3 6" strokeWidth={2}
-                          dot={false} connectNulls
+                        <Line
+                          type="monotone"
+                          dataKey="benchmark"
+                          name="Market ben."
+                          stroke="#a1a1aa"
+                          strokeWidth={1}
+                          strokeDasharray="6 4"
+                          dot={false}
+                          connectNulls
                         />
                       ) : null}
                     </>
@@ -1717,6 +1815,7 @@ export default function AnalyticsPage() {
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
+            )}
 
             {viewLevel !== "property" && currTotal > 0 ? (
               <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
