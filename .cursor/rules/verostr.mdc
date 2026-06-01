@@ -189,6 +189,7 @@ AirDNA submarket: `airdna-2116` (Rosemary Beach / 30a) for `market_id = '30a'`
 | Webhook handlers lib | `lib/stripe-webhook-handlers.ts`             |
 | Billing rates lib    | `lib/billing-rates.ts`                       |
 | Performance Summary cards | `components/performance-summary-cards.tsx` |
+| Period stats lib          | `lib/period-stats.ts`                        |
 ---
 
 ## Scope Guards — What NOT to Build
@@ -204,7 +205,9 @@ Unless there is an explicit decision in the spec, do not build:
 - **RevPAR Index normalization / bedroom cohort** — Phase 2 refinement.
 - **Quarter toggle** — removed in v1.4. Do not re-add.
 - **All Time toggle** — removed in v1.4. Do not re-add.
-- **RevPAR denominator** — always `available_nights`. ADR denominator — always `prorated_booked_nights`. These must never be swapped.
+- **RevPAR denominator** — always `available_nights`. ADR denominator — always `prorated_booked_nights` (`guestBookedNights`). These must never be swapped.
+- **Cross-property contamination** — `computePeriodStats` groups bookings by `property_id` before computing available nights. Never apply one property's owner/maintenance blocks to another property's denominator.
+- **Index card** — deferred to Sprint 17. Final card order: Revenue | RevPAR | Occ% | ADR | Index.
 ---
 
 ## AirDNA Monthly Refresh
@@ -217,4 +220,4 @@ npx ts-node scripts/ingest-airdna.ts --mode refresh --market 30a
 
 ---
 
-*VeroSTR | verostr.mdc | Schema v0.18 | Analytics Spec v1.4 | Sprint 16*
+*VeroSTR | verostr.mdc | Schema v0.18 | Analytics Spec v1.4 | Sprint 17*
