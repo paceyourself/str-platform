@@ -81,6 +81,21 @@ Last-minute owner stays (booked <14 days prior) are NOT subtracted — they redu
 ❌ AVG(property_revpar)                  — never average the averages
 ```
 
+### Denominators — must never be swapped
+```
+✅ RevPAR denominator = available_nights
+✅ ADR denominator    = prorated_booked_nights (guestBookedNights)
+❌ Swapping these causes RevPAR > ADR — a mathematically impossible result (caught Sprint 16)
+```
+
+### computePeriodStats — async, always await
+```
+✅ Always await computePeriodStats(...)
+✅ Call sites use useEffect + state pattern
+❌ useMemo — computePeriodStats is async; useMemo does not support async functions
+```
+Applies to both app/dashboard/page.tsx and app/dashboard/analytics/page.tsx.
+
 ### Benchmark metrics
 ```
 benchmark_occ    — stored as 0–100 percentage scale. Use as-is. DO NOT divide by 100.
@@ -89,20 +104,60 @@ benchmark_revpar — stored as day-weighted rate. Use as-is.
 ```
 All three are day-weighted rates, not daily fractions. Aggregation uses day-weighted average:
 ```sql
-SUM(benchmark_revpar * days_in_period) / SUM(days_in_period)
+SUM(benchmark_revpar * overlap_days) / NULLIF(SUM(overlap_days), 0)
+```
+
+### market_benchmarks — no date columns, derive from week_number + year
+```
+❌ week_start_date — this column does not exist
+❌ days_in_period  — this column does not exist
+```
+Always derive ISO week bounds using:
+```sql
+to_date(year::text || '-' || week_number::text, 'IYYY-IW')         -- Monday of ISO week (week_start)
+to_date(year::text || '-' || week_number::text, 'IYYY-IW') + 7     -- exclusive week end
+```
+Overlap days for a week intersecting a period:
+```sql
+GREATEST(0,
+  LEAST(week_end, period_end::date) - GREATEST(week_start, period_start::date)
+) AS overlap_days
 ```
 
 ### Benchmark chart guard — applies to BOTH analytics page and dashboard
-Only plot benchmark weeks where the ISO week start date falls within a month
-that has `data_complete = true` in `property_coverage_months`.
+Only include benchmark weeks where the week's Monday month has `data_complete = true`
+in `property_coverage_months`. Derive week_start from week_number + year (no date column exists).
 
 ```sql
+WITH week_bounds AS (
+  SELECT mb.*,
+    to_date(mb.year::text || '-' || mb.week_number::text, 'IYYY-IW') AS week_start
+  FROM market_benchmarks mb
+  WHERE mb.market_id = :market_id
+    AND mb.source    = 'airdna_api'
+)
+-- Coverage guard JOIN — use month of week_start (Monday)
 JOIN property_coverage_months pcm
-  ON pcm.property_id   = :property_id
-  AND pcm.coverage_year  = EXTRACT(year  FROM mb.week_start_date)::int
-  AND pcm.coverage_month = EXTRACT(month FROM mb.week_start_date)::int
+  ON  pcm.property_id    = :property_id
+  AND pcm.coverage_year  = EXTRACT(year  FROM week_bounds.week_start)::int
+  AND pcm.coverage_month = EXTRACT(month FROM week_bounds.week_start)::int
   AND pcm.data_complete  = true
 ```
+An ISO week spanning two months is attributed to the month its Monday falls in.
+
+### Index card — built Sprint 17
+Card order: **Gross Revenue | RevPAR | Occ% | ADR | Index**
+
+```
+Index = Math.round((property_revpar / benchmarkRevPAR) × 100)
+      = — (em dash) when benchmarkRevPAR is null
+```
+- `benchmarkRevPAR` is returned by `computePeriodStats` as `number | null`
+- No YoY delta on the Index card
+- Subtext: "vs. market benchmark"
+- Index currently running 42–50 across CYTD/LTM/LFY — likely AirDNA submarket airdna-2116
+  (Rosemary Beach) skewing high relative to Inlet Beach properties. Not a bug.
+  Revisit when second PM data is available for comparison.
 
 ---
 
@@ -157,9 +212,10 @@ regardless of which toggle is selected. Delta is hidden (not shown as zero) if p
 - **Annual price key:** `owner_essentials_annual` — read via `get_current_rate('owner_essentials_annual')`
 - **Monthly price key:** `owner_essentials_monthly` — read via `get_current_rate('owner_essentials_monthly')`
 - **STRIPE_WEBHOOK_SECRET:** `.env.local` currently holds the Stripe CLI local secret — swap for the dashboard webhook secret before any production deployment
+
 ---
 
-## Active Properties (as of Sprint 15)
+## Active Properties (as of Sprint 18)
 
 | Owner | Property | PM | Property ID |
 |-------|----------|----|-------------|
@@ -182,16 +238,17 @@ AirDNA submarket: `airdna-2116` (Rosemary Beach / 30a) for `market_id = '30a'`
 | Upload page | `app/dashboard/upload/page.tsx` |
 | AirDNA ingest script | `scripts/ingest-airdna.ts` |
 | Admin file format editor | `app/admin/file-format-editor/page.tsx` |
-| Billing page         | `app/dashboard/billing/page.tsx`             |
-| Billing checkout UI  | `app/dashboard/billing/billing-checkout.tsx` |
-| Checkout API route   | `app/api/billing/checkout/route.ts`          |
-| Webhook handler      | `app/api/webhooks/stripe/route.ts`           |
-| Webhook handlers lib | `lib/stripe-webhook-handlers.ts`             |
-| Billing rates lib    | `lib/billing-rates.ts`                       |
+| Billing page | `app/dashboard/billing/page.tsx` |
+| Billing checkout UI | `app/dashboard/billing/billing-checkout.tsx` |
+| Checkout API route | `app/api/billing/checkout/route.ts` |
+| Webhook handler | `app/api/webhooks/stripe/route.ts` |
+| Webhook handlers lib | `lib/stripe-webhook-handlers.ts` |
+| Billing rates lib | `lib/billing-rates.ts` |
 | Performance Summary cards | `components/performance-summary-cards.tsx` |
-| Period stats lib          | `lib/period-stats.ts`                        |
+| Period stats lib | `lib/period-stats.ts` |
 | Brand icon generator | `scripts/generate-brand-icons.mjs` |
-| 404 page             | `app/not-found.tsx`                |
+| 404 page | `app/not-found.tsx` |
+
 ---
 
 ## Scope Guards — What NOT to Build
@@ -207,12 +264,9 @@ Unless there is an explicit decision in the spec, do not build:
 - **RevPAR Index normalization / bedroom cohort** — Phase 2 refinement.
 - **Quarter toggle** — removed in v1.4. Do not re-add.
 - **All Time toggle** — removed in v1.4. Do not re-add.
-- **RevPAR denominator** — always `available_nights`. ADR denominator — always `prorated_booked_nights` (`guestBookedNights`). These must never be swapped.
-- **Cross-property contamination** — `computePeriodStats` groups bookings by `property_id` before computing available nights. Never apply one property's owner/maintenance blocks to another property's denominator.
-- **Index card** — deferred to Sprint 17. Final card order: Revenue | RevPAR | Occ% | ADR | Index.
-- **favicon.ico location:** Must be in `app/favicon.ico` — Next.js serves `app/` before `public/`. Replacing only `public/favicon.ico` has no effect.
-- **computePeriodStats is async:** Always await it. Call sites must use useEffect + state, not useMemo.
-- **market_benchmarks:** No `week_start_date` column. Always derive ISO week Monday via `to_date(year::text || '-' || week_number::text, 'IYYY-IW')`.
+- **favicon.ico** — must be in `app/favicon.ico`. Next.js serves `app/` before `public/`. Replacing only `public/favicon.ico` has no effect on the browser tab icon.
+- **Owner value proposition page** — post-MVP marketing asset. Narrative/capability framing, not a calculator. Gate: TOS live + first independent owner validated end-to-end.
+
 ---
 
 ## AirDNA Monthly Refresh
