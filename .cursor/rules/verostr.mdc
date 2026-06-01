@@ -190,6 +190,8 @@ AirDNA submarket: `airdna-2116` (Rosemary Beach / 30a) for `market_id = '30a'`
 | Billing rates lib    | `lib/billing-rates.ts`                       |
 | Performance Summary cards | `components/performance-summary-cards.tsx` |
 | Period stats lib          | `lib/period-stats.ts`                        |
+| Brand icon generator | `scripts/generate-brand-icons.mjs` |
+| 404 page             | `app/not-found.tsx`                |
 ---
 
 ## Scope Guards — What NOT to Build
@@ -208,6 +210,9 @@ Unless there is an explicit decision in the spec, do not build:
 - **RevPAR denominator** — always `available_nights`. ADR denominator — always `prorated_booked_nights` (`guestBookedNights`). These must never be swapped.
 - **Cross-property contamination** — `computePeriodStats` groups bookings by `property_id` before computing available nights. Never apply one property's owner/maintenance blocks to another property's denominator.
 - **Index card** — deferred to Sprint 17. Final card order: Revenue | RevPAR | Occ% | ADR | Index.
+- **favicon.ico location:** Must be in `app/favicon.ico` — Next.js serves `app/` before `public/`. Replacing only `public/favicon.ico` has no effect.
+- **computePeriodStats is async:** Always await it. Call sites must use useEffect + state, not useMemo.
+- **market_benchmarks:** No `week_start_date` column. Always derive ISO week Monday via `to_date(year::text || '-' || week_number::text, 'IYYY-IW')`.
 ---
 
 ## AirDNA Monthly Refresh
@@ -220,4 +225,4 @@ npx ts-node scripts/ingest-airdna.ts --mode refresh --market 30a
 
 ---
 
-*VeroSTR | verostr.mdc | Schema v0.18 | Analytics Spec v1.4 | Sprint 17*
+*VeroSTR | verostr.mdc | Schema v0.18 | Analytics Spec v1.4 | Sprint 18*
