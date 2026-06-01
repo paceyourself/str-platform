@@ -4,7 +4,7 @@ globs:
 alwaysApply: true
 ---
 # VeroSTR — Cursor Standing Rules
-# Analytics Framework Spec v1.4 | Schema v0.18 | Sprint 15
+# Analytics Framework Spec v1.4 | Schema v0.18 | Sprint 18
 # Read this before touching any analytics, dashboard, upload, or billing code.
 
 ---
