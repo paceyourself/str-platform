@@ -1,3 +1,5 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
+
 export type CalendarMonth = { year: number; month: number };
 
 export type BookingRow = {
@@ -15,8 +17,24 @@ export type PeriodStats = {
   grossRevenue: number;
   occ: number | null;
   avgNightly: number | null;
+  benchmarkRevPAR: number | null;
   guestBookings: number;
   ownerStays: number;
+};
+
+type CoverageRow = {
+  property_id: string;
+  coverage_year: number;
+  coverage_month: number;
+  data_complete: boolean;
+  admin_override?: boolean;
+};
+
+type BenchmarkRow = {
+  market_id: string;
+  year: number;
+  week_number: number;
+  benchmark_revpar: number | string | null;
 };
 
 const GUEST_BLOCK_TYPES = new Set(["guest_ota", "guest_pm_direct"]);
@@ -99,15 +117,260 @@ function checkInStrictlyBeforeToday(
   return ci.getTime() < today.getTime();
 }
 
-export function computePeriodStats(
+/** ISO week Monday from year + week_number (matches Postgres IYYY-IW). */
+function isoWeekMonday(isoWeekYear: number, isoWeek: number): Date {
+  const jan4 = new Date(isoWeekYear, 0, 4, 12, 0, 0);
+  const dow = (jan4.getDay() + 6) % 7;
+  const week1Monday = new Date(jan4);
+  week1Monday.setDate(jan4.getDate() - dow);
+  const monday = new Date(week1Monday);
+  monday.setDate(week1Monday.getDate() + (Math.min(53, Math.max(1, isoWeek)) - 1) * 7);
+  monday.setHours(12, 0, 0, 0);
+  return monday;
+}
+
+function periodBoundsExclusive(months: CalendarMonth[]): {
+  start: Date;
+  endExclusive: Date;
+} | null {
+  if (months.length === 0) return null;
+  const sorted = [...months].sort((a, b) =>
+    a.year !== b.year ? a.year - b.year : a.month - b.month,
+  );
+  const first = sorted[0];
+  const last = sorted[sorted.length - 1];
+  const start = new Date(first.year, first.month - 1, 1, 12, 0, 0);
+  const endExclusive = new Date(last.year, last.month, 1, 12, 0, 0);
+  return { start, endExclusive };
+}
+
+function overlapDaysWeekAndPeriod(
+  weekStart: Date,
+  periodStart: Date,
+  periodEndExclusive: Date,
+): number {
+  const weekEnd = new Date(weekStart);
+  weekEnd.setDate(weekStart.getDate() + 7);
+  weekEnd.setHours(12, 0, 0, 0);
+  if (!(weekStart.getTime() < periodEndExclusive.getTime() && weekEnd.getTime() > periodStart.getTime())) {
+    return 0;
+  }
+  const overlapStart = new Date(
+    Math.max(weekStart.getTime(), periodStart.getTime()),
+  );
+  const overlapEnd = new Date(
+    Math.min(weekEnd.getTime(), periodEndExclusive.getTime()),
+  );
+  if (!(overlapEnd > overlapStart)) return 0;
+  return Math.round((overlapEnd.getTime() - overlapStart.getTime()) / 86400000);
+}
+
+function isCoverageCompleteForWeek(
+  propertyId: string,
+  weekStartMonday: Date,
+  coverageRows: CoverageRow[],
+): boolean {
+  const y = weekStartMonday.getFullYear();
+  const m = weekStartMonday.getMonth() + 1;
+  return coverageRows.some(
+    (c) =>
+      c.property_id === propertyId &&
+      Number(c.coverage_year) === y &&
+      Number(c.coverage_month) === m &&
+      (c.data_complete || c.admin_override),
+  );
+}
+
+function weightedBenchmarkRevparForProperty(
+  propertyId: string,
+  marketId: string,
+  periodStart: Date,
+  periodEndExclusive: Date,
+  benchmarkRows: BenchmarkRow[],
+  coverageRows: CoverageRow[],
+): number | null {
+  let weightedSum = 0;
+  let totalDays = 0;
+
+  for (const row of benchmarkRows) {
+    if (row.market_id !== marketId) continue;
+    if (row.year == null || row.week_number == null) continue;
+    const revpar = Number(row.benchmark_revpar);
+    if (!Number.isFinite(revpar)) continue;
+
+    const weekStart = isoWeekMonday(Number(row.year), Number(row.week_number));
+    const overlapDays = overlapDaysWeekAndPeriod(
+      weekStart,
+      periodStart,
+      periodEndExclusive,
+    );
+    if (overlapDays <= 0) continue;
+    if (!isCoverageCompleteForWeek(propertyId, weekStart, coverageRows)) {
+      continue;
+    }
+
+    weightedSum += revpar * overlapDays;
+    totalDays += overlapDays;
+  }
+
+  return totalDays > 0 ? weightedSum / totalDays : null;
+}
+
+async function resolvePropertyMarkets(
+  supabase: SupabaseClient,
+  propertyIds: string[],
+  fallbackMarketId: string,
+): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  if (propertyIds.length === 0) return map;
+
+  const { data, error } = await supabase
+    .from("properties")
+    .select("id, market_id")
+    .in("id", propertyIds);
+
+  if (error) {
+    console.error("[period-stats] properties market_id", error.message);
+    for (const id of propertyIds) {
+      if (fallbackMarketId) map.set(id, fallbackMarketId);
+    }
+    return map;
+  }
+
+  for (const row of data ?? []) {
+    const id = String(row.id ?? "").trim();
+    const mid = String(row.market_id ?? "").trim() || fallbackMarketId;
+    if (id && mid) map.set(id, mid);
+  }
+
+  for (const id of propertyIds) {
+    if (!map.has(id) && fallbackMarketId) map.set(id, fallbackMarketId);
+  }
+
+  return map;
+}
+
+async function fetchBenchmarkRowsByMarkets(
+  supabase: SupabaseClient,
+  marketIds: string[],
+): Promise<BenchmarkRow[]> {
+  if (marketIds.length === 0) return [];
+
+  const { data, error } = await supabase
+    .from("market_benchmarks")
+    .select("market_id, year, week_number, benchmark_revpar")
+    .in("market_id", marketIds)
+    .eq("source", "airdna_api");
+
+  if (error) {
+    console.error("[period-stats] market_benchmarks", error.message);
+    return [];
+  }
+
+  return (data ?? []) as BenchmarkRow[];
+}
+
+async function fetchCoverageForProperties(
+  supabase: SupabaseClient,
+  propertyIds: string[],
+): Promise<CoverageRow[]> {
+  if (propertyIds.length === 0) return [];
+
+  const { data, error } = await supabase
+    .from("property_coverage_months")
+    .select(
+      "property_id, coverage_year, coverage_month, data_complete, admin_override",
+    )
+    .in("property_id", propertyIds);
+
+  if (error) {
+    console.error("[period-stats] property_coverage_months", error.message);
+    return [];
+  }
+
+  return (data ?? []) as CoverageRow[];
+}
+
+async function computeBenchmarkRevPAR(
+  supabase: SupabaseClient,
+  months: CalendarMonth[],
+  marketId: string,
+  propertyIds: string[],
+  availableNightsByProperty: Map<string, number>,
+): Promise<number | null> {
+  const bounds = periodBoundsExclusive(months);
+  if (!bounds || propertyIds.length === 0) return null;
+
+  const propertyMarkets = await resolvePropertyMarkets(
+    supabase,
+    propertyIds,
+    marketId,
+  );
+  const marketIds = [
+    ...new Set([...propertyMarkets.values()].filter(Boolean)),
+  ];
+  if (marketIds.length === 0) return null;
+
+  const [benchmarkRows, coverageRows] = await Promise.all([
+    fetchBenchmarkRowsByMarkets(supabase, marketIds),
+    fetchCoverageForProperties(supabase, propertyIds),
+  ]);
+
+  let blendWeighted = 0;
+  let blendAvail = 0;
+
+  for (const propertyId of propertyIds) {
+    const propMarket = propertyMarkets.get(propertyId);
+    if (!propMarket) continue;
+
+    const propBenchmark = weightedBenchmarkRevparForProperty(
+      propertyId,
+      propMarket,
+      bounds.start,
+      bounds.endExclusive,
+      benchmarkRows,
+      coverageRows,
+    );
+    const avail = availableNightsByProperty.get(propertyId) ?? 0;
+
+    if (propBenchmark != null && avail > 0) {
+      blendWeighted += propBenchmark * avail;
+      blendAvail += avail;
+    }
+  }
+
+  if (blendAvail > 0) return blendWeighted / blendAvail;
+
+  if (propertyIds.length === 1) {
+    const pid = propertyIds[0];
+    const propMarket = propertyMarkets.get(pid);
+    if (!propMarket) return null;
+    return weightedBenchmarkRevparForProperty(
+      pid,
+      propMarket,
+      bounds.start,
+      bounds.endExclusive,
+      benchmarkRows,
+      coverageRows,
+    );
+  }
+
+  return null;
+}
+
+export async function computePeriodStats(
   bookings: BookingRow[],
   months: CalendarMonth[],
-): PeriodStats {
+  supabase: SupabaseClient,
+  marketId: string,
+  propertyIds: string[],
+): Promise<PeriodStats> {
   let grossRevenue = 0;
   let guestBookedNights = 0;
   let availableNights = 0;
   const guestBookingKeys = new Set<string>();
   const ownerStayKeys = new Set<string>();
+  const availableNightsByProperty = new Map<string, number>();
 
   const byProperty = new Map<string, BookingRow[]>();
   for (const b of bookings) {
@@ -159,13 +422,27 @@ export function computePeriodStats(
       }
     }
 
-    // Each property gets its own calendar month; never apply one property's
-    // owner/maintenance blocks to another property's available-nights denominator.
     for (const pid of byProperty.keys()) {
-      const availReduction = Math.max(availReductionByProperty.get(pid) ?? 0, 0);
-      availableNights += Math.max(0, dim - Math.min(availReduction, dim));
+      const availReduction = Math.max(
+        availReductionByProperty.get(pid) ?? 0,
+        0,
+      );
+      const monthAvail = Math.max(0, dim - Math.min(availReduction, dim));
+      availableNights += monthAvail;
+      availableNightsByProperty.set(
+        pid,
+        (availableNightsByProperty.get(pid) ?? 0) + monthAvail,
+      );
     }
   }
+
+  const benchmarkRevPAR = await computeBenchmarkRevPAR(
+    supabase,
+    months,
+    marketId,
+    propertyIds,
+    availableNightsByProperty,
+  );
 
   return {
     revpar: availableNights > 0 ? grossRevenue / availableNights : null,
@@ -173,6 +450,7 @@ export function computePeriodStats(
     occ:
       availableNights > 0 ? guestBookedNights / availableNights : null,
     avgNightly: guestBookedNights > 0 ? grossRevenue / guestBookedNights : null,
+    benchmarkRevPAR,
     guestBookings: guestBookingKeys.size,
     ownerStays: ownerStayKeys.size,
   };

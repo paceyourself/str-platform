@@ -59,9 +59,16 @@ export function PerformanceSummaryCards({
     return <p className="mt-3 text-sm text-zinc-500">Loading bookings…</p>;
   }
 
+  const index =
+    current.revpar != null &&
+    current.benchmarkRevPAR != null &&
+    current.benchmarkRevPAR > 0
+      ? Math.round((current.revpar / current.benchmarkRevPAR) * 100)
+      : null;
+
   return (
     <>
-      <dl className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <dl className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <div className="rounded-lg bg-zinc-50 p-3 dark:bg-zinc-900/50">
           <dt className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
             Gross revenue
@@ -107,6 +114,15 @@ export function PerformanceSummaryCards({
           <p className="mt-0.5 text-xs text-zinc-500">
             Gross ÷ prorated nights (guest)
           </p>
+        </div>
+        <div className="rounded-lg bg-zinc-50 p-3 dark:bg-zinc-900/50">
+          <dt className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+            Index
+          </dt>
+          <dd className="mt-1 text-2xl font-semibold tabular-nums text-zinc-900 dark:text-zinc-50">
+            {index != null ? index.toString() : "—"}
+          </dd>
+          <p className="mt-0.5 text-xs text-zinc-500">vs. market benchmark</p>
         </div>
       </dl>
       {priorDeltaTooltip ? (

@@ -6,7 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import PmManagerCard from "@/components/PmManagerCard";
 import { PerformanceSummaryCards } from "@/components/performance-summary-cards";
-import { computePeriodStats, pctDelta } from "@/lib/period-stats";
+import { computePeriodStats, pctDelta, type PeriodStats } from "@/lib/period-stats";
 import {
   CartesianGrid,
   Line,
@@ -994,29 +994,108 @@ export default function DashboardPage() {
         ? "Prior-year comparison hidden — prior period data incomplete."
         : "";
 
-  const performanceSummary = useMemo(() => {
-    const { curr, prior } = periodWindows[periodMode];
-    const current = computePeriodStats(bookings, curr);
-    const priorStats = computePeriodStats(bookings, prior);
-    return {
-      current,
-      prior: priorStats,
-      deltas: {
-        grossRevenue: priorPeriodComplete
-          ? pctDelta(current.grossRevenue, priorStats.grossRevenue)
-          : null,
-        revpar: priorPeriodComplete
-          ? pctDelta(current.revpar, priorStats.revpar)
-          : null,
-        occ: priorPeriodComplete
-          ? pctDelta(current.occ, priorStats.occ)
-          : null,
-        avgNightly: priorPeriodComplete
-          ? pctDelta(current.avgNightly, priorStats.avgNightly)
-          : null,
-      },
+  const dashboardPropertyIds = useMemo(
+    () => properties.map((p) => p.id).filter(Boolean),
+    [properties],
+  );
+
+  const dashboardMarketId = useMemo(
+    () => properties.find((p) => (p.market_id ?? "").trim())?.market_id?.trim() ?? "",
+    [properties],
+  );
+
+  type PerformanceSummaryState = {
+    current: PeriodStats;
+    deltas: {
+      grossRevenue: number | null;
+      revpar: number | null;
+      occ: number | null;
+      avgNightly: number | null;
     };
-  }, [bookings, periodMode, periodWindows, priorPeriodComplete]);
+  };
+
+  const [performanceSummary, setPerformanceSummary] =
+    useState<PerformanceSummaryState | null>(null);
+  const [performanceSummaryLoading, setPerformanceSummaryLoading] =
+    useState(false);
+
+  useEffect(() => {
+    let cancel = false;
+
+    if (
+      propertiesLoading ||
+      bookingsLoading ||
+      covLoading ||
+      properties.length === 0 ||
+      inclusionNow.currIncluded === 0 ||
+      !dashboardMarketId
+    ) {
+      setPerformanceSummary(null);
+      setPerformanceSummaryLoading(false);
+      return;
+    }
+
+    (async () => {
+      setPerformanceSummaryLoading(true);
+      const { curr, prior } = periodWindows[periodMode];
+      try {
+        const current = await computePeriodStats(
+          bookings,
+          curr,
+          supabase,
+          dashboardMarketId,
+          dashboardPropertyIds,
+        );
+        const priorStats = await computePeriodStats(
+          bookings,
+          prior,
+          supabase,
+          dashboardMarketId,
+          dashboardPropertyIds,
+        );
+        if (cancel) return;
+        setPerformanceSummary({
+          current,
+          deltas: {
+            grossRevenue: priorPeriodComplete
+              ? pctDelta(current.grossRevenue, priorStats.grossRevenue)
+              : null,
+            revpar: priorPeriodComplete
+              ? pctDelta(current.revpar, priorStats.revpar)
+              : null,
+            occ: priorPeriodComplete
+              ? pctDelta(current.occ, priorStats.occ)
+              : null,
+            avgNightly: priorPeriodComplete
+              ? pctDelta(current.avgNightly, priorStats.avgNightly)
+              : null,
+          },
+        });
+      } catch (err) {
+        console.error("[dashboard] performance summary", err);
+        if (!cancel) setPerformanceSummary(null);
+      } finally {
+        if (!cancel) setPerformanceSummaryLoading(false);
+      }
+    })();
+
+    return () => {
+      cancel = true;
+    };
+  }, [
+    bookings,
+    periodMode,
+    periodWindows,
+    priorPeriodComplete,
+    propertiesLoading,
+    bookingsLoading,
+    covLoading,
+    properties.length,
+    inclusionNow.currIncluded,
+    dashboardMarketId,
+    dashboardPropertyIds,
+    supabase,
+  ]);
 
   const benchmarkAllowedMonthKeys = useMemo(() => {
     const allowed = new Set<string>();
@@ -1034,7 +1113,26 @@ export default function DashboardPage() {
     return allowed;
   }, [properties, coverage, pmByProperty]);
 
-  const revparChartData = useMemo(() => {
+  const [revparChartData, setRevparChartData] = useState<
+    {
+      monthKey: string;
+      monthLabel: string;
+      propertyRevpar: number | null;
+      priorPropertyRevpar: number | null;
+      benchmarkRevpar: number | null;
+    }[]
+  >([]);
+  const [revparChartLoading, setRevparChartLoading] = useState(false);
+
+  useEffect(() => {
+    let cancel = false;
+
+    if (propertiesLoading || bookingsLoading || properties.length === 0) {
+      setRevparChartData([]);
+      setRevparChartLoading(false);
+      return;
+    }
+
     const { curr, prior } = periodWindows[periodMode];
     const chartBuckets = monthsToChartBuckets(curr);
     const periodMonthKeys = new Set(curr.map((m) => monthKey(m.year, m.month)));
@@ -1046,29 +1144,65 @@ export default function DashboardPage() {
       benchmarkAllowedForPeriod,
     );
 
-    return chartBuckets.map(({ monthKey: mk, monthLabel, year, month }, idx) => {
-      const monthStats = computePeriodStats(bookings, [{ year, month }]);
-      const bench = benchmarkByMonth.get(mk);
-      const monthAllowed = benchmarkAllowedForPeriod.has(mk);
-      const benchmarkRevpar =
-        monthAllowed && bench !== undefined && Number.isFinite(bench)
-          ? bench
-          : null;
+    if (!dashboardMarketId) {
+      setRevparChartData([]);
+      setRevparChartLoading(false);
+      return;
+    }
 
-      let priorPropertyRevpar: number | null = null;
-      if (priorPeriodComplete && prior[idx]) {
-        const priorMonth = prior[idx];
-        priorPropertyRevpar = computePeriodStats(bookings, [priorMonth]).revpar;
+    (async () => {
+      setRevparChartLoading(true);
+      try {
+        const rows = await Promise.all(
+          chartBuckets.map(async ({ monthKey: mk, monthLabel, year, month }, idx) => {
+            const monthStats = await computePeriodStats(
+              bookings,
+              [{ year, month }],
+              supabase,
+              dashboardMarketId,
+              dashboardPropertyIds,
+            );
+            const bench = benchmarkByMonth.get(mk);
+            const monthAllowed = benchmarkAllowedForPeriod.has(mk);
+            const benchmarkRevpar =
+              monthAllowed && bench !== undefined && Number.isFinite(bench)
+                ? bench
+                : null;
+
+            let priorPropertyRevpar: number | null = null;
+            if (priorPeriodComplete && prior[idx]) {
+              const priorMonth = prior[idx];
+              const priorStats = await computePeriodStats(
+                bookings,
+                [priorMonth],
+                supabase,
+                dashboardMarketId,
+                dashboardPropertyIds,
+              );
+              priorPropertyRevpar = priorStats.revpar;
+            }
+
+            return {
+              monthKey: mk,
+              monthLabel,
+              propertyRevpar: monthStats.revpar,
+              priorPropertyRevpar,
+              benchmarkRevpar,
+            };
+          }),
+        );
+        if (!cancel) setRevparChartData(rows);
+      } catch (err) {
+        console.error("[dashboard] revpar chart", err);
+        if (!cancel) setRevparChartData([]);
+      } finally {
+        if (!cancel) setRevparChartLoading(false);
       }
+    })();
 
-      return {
-        monthKey: mk,
-        monthLabel,
-        propertyRevpar: monthStats.revpar,
-        priorPropertyRevpar,
-        benchmarkRevpar,
-      };
-    });
+    return () => {
+      cancel = true;
+    };
   }, [
     benchmarkRows,
     bookings,
@@ -1076,6 +1210,12 @@ export default function DashboardPage() {
     periodMode,
     periodWindows,
     priorPeriodComplete,
+    propertiesLoading,
+    bookingsLoading,
+    properties.length,
+    dashboardMarketId,
+    dashboardPropertyIds,
+    supabase,
   ]);
 
   const hasPriorRevparSeries = useMemo(
@@ -1304,6 +1444,8 @@ export default function DashboardPage() {
             Upload complete statements to unlock performance metrics for{" "}
             {PERIOD_TOGGLE_DEF[periodMode].shortLabel}.
           </p>
+        ) : performanceSummaryLoading || !performanceSummary ? (
+          <p className="mt-4 text-sm text-zinc-500">Loading performance metrics…</p>
         ) : (
           <div className="mt-4">
           <PerformanceSummaryCards
@@ -1329,8 +1471,8 @@ export default function DashboardPage() {
         </p>
         {properties.length === 0 ? (
           <p className="mt-3 text-sm text-zinc-500">Loading properties…</p>
-        ) : bookingsLoading ? (
-          <p className="mt-3 text-sm text-zinc-500">Loading bookings…</p>
+        ) : bookingsLoading || revparChartLoading ? (
+          <p className="mt-3 text-sm text-zinc-500">Loading chart…</p>
         ) : (
           <>
             <div className="mt-4 h-[300px] w-full min-w-0 sm:h-[320px]">

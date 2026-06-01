@@ -10,7 +10,7 @@
 import Link from "next/link";
 import { PerformanceSummaryCards } from "@/components/performance-summary-cards";
 import { createClient } from "@/lib/supabase";
-import { computePeriodStats, pctDelta } from "@/lib/period-stats";
+import { computePeriodStats, pctDelta, type PeriodStats } from "@/lib/period-stats";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CartesianGrid,
@@ -1223,33 +1223,34 @@ export default function AnalyticsPage() {
         ? "Prior-year comparison hidden — prior period data incomplete."
         : "";
 
-  const performanceSummary = useMemo(() => {
-    const { curr, prior } = periodWindows[periodMode];
-    const current = computePeriodStats(scopedBookingsFlat, curr);
-    const priorStats = computePeriodStats(scopedBookingsFlat, prior);
-    return {
-      current,
-      deltas: {
-        grossRevenue: priorPeriodComplete
-          ? pctDelta(current.grossRevenue, priorStats.grossRevenue)
-          : null,
-        revpar: priorPeriodComplete
-          ? pctDelta(current.revpar, priorStats.revpar)
-          : null,
-        occ: priorPeriodComplete
-          ? pctDelta(current.occ, priorStats.occ)
-          : null,
-        avgNightly: priorPeriodComplete
-          ? pctDelta(current.avgNightly, priorStats.avgNightly)
-          : null,
-      },
+  const summaryPropertyIds = useMemo(
+    () => scopedProperties.map((p) => p.id).filter(Boolean),
+    [scopedProperties],
+  );
+
+  const summaryMarketId = useMemo(() => {
+    const fromSelection = selectedMarketId.trim();
+    if (fromSelection) return fromSelection;
+    return (
+      scopedProperties.find((p) => (p.market_id ?? "").trim())?.market_id?.trim() ??
+      ""
+    );
+  }, [selectedMarketId, scopedProperties]);
+
+  type PerformanceSummaryState = {
+    current: PeriodStats;
+    deltas: {
+      grossRevenue: number | null;
+      revpar: number | null;
+      occ: number | null;
+      avgNightly: number | null;
     };
-  }, [
-    scopedBookingsFlat,
-    periodMode,
-    periodWindows,
-    priorPeriodComplete,
-  ]);
+  };
+
+  const [performanceSummary, setPerformanceSummary] =
+    useState<PerformanceSummaryState | null>(null);
+  const [performanceSummaryLoading, setPerformanceSummaryLoading] =
+    useState(false);
 
   const pmTransitionWarning = false;
 
@@ -1347,6 +1348,82 @@ export default function AnalyticsPage() {
   const showAnalytics =
     locksNow.currComplete &&
     (viewLevel !== "property" || scopedHasBookings || bookingsLoading);
+
+  useEffect(() => {
+    let cancel = false;
+
+    if (
+      bookingsLoading ||
+      covLoading ||
+      !showAnalytics ||
+      scopedProperties.length === 0 ||
+      !summaryMarketId
+    ) {
+      setPerformanceSummary(null);
+      setPerformanceSummaryLoading(false);
+      return;
+    }
+
+    (async () => {
+      setPerformanceSummaryLoading(true);
+      const { curr, prior } = periodWindows[periodMode];
+      try {
+        const current = await computePeriodStats(
+          scopedBookingsFlat,
+          curr,
+          supabase,
+          summaryMarketId,
+          summaryPropertyIds,
+        );
+        const priorStats = await computePeriodStats(
+          scopedBookingsFlat,
+          prior,
+          supabase,
+          summaryMarketId,
+          summaryPropertyIds,
+        );
+        if (cancel) return;
+        setPerformanceSummary({
+          current,
+          deltas: {
+            grossRevenue: priorPeriodComplete
+              ? pctDelta(current.grossRevenue, priorStats.grossRevenue)
+              : null,
+            revpar: priorPeriodComplete
+              ? pctDelta(current.revpar, priorStats.revpar)
+              : null,
+            occ: priorPeriodComplete
+              ? pctDelta(current.occ, priorStats.occ)
+              : null,
+            avgNightly: priorPeriodComplete
+              ? pctDelta(current.avgNightly, priorStats.avgNightly)
+              : null,
+          },
+        });
+      } catch (err) {
+        console.error("[analytics] performance summary", err);
+        if (!cancel) setPerformanceSummary(null);
+      } finally {
+        if (!cancel) setPerformanceSummaryLoading(false);
+      }
+    })();
+
+    return () => {
+      cancel = true;
+    };
+  }, [
+    scopedBookingsFlat,
+    periodMode,
+    periodWindows,
+    priorPeriodComplete,
+    bookingsLoading,
+    covLoading,
+    showAnalytics,
+    scopedProperties.length,
+    summaryMarketId,
+    summaryPropertyIds,
+    supabase,
+  ]);
 
   /** Chart rows with dual series for Recharts — current solid, prior muted dashed. */
   const chartDatum = currCombined.map((r) => {
@@ -1689,6 +1766,9 @@ export default function AnalyticsPage() {
             ) : null}
 
             <div className="mt-4">
+            {performanceSummaryLoading || !performanceSummary ? (
+              <p className="text-sm text-zinc-500">Loading performance metrics…</p>
+            ) : (
             <PerformanceSummaryCards
               current={performanceSummary.current}
               deltas={performanceSummary.deltas}
@@ -1698,8 +1778,8 @@ export default function AnalyticsPage() {
                   ? priorDeltaTooltip
                   : undefined
               }
-              loading={bookingsLoading || covLoading}
             />
+            )}
             </div>
           </section>
 
