@@ -212,7 +212,9 @@ regardless of which toggle is selected. Delta is hidden (not shown as zero) if p
 - **Annual price key:** `owner_essentials_annual` — read via `get_current_rate('owner_essentials_annual')`
 - **Monthly price key:** `owner_essentials_monthly` — read via `get_current_rate('owner_essentials_monthly')`
 - **STRIPE_WEBHOOK_SECRET:** `.env.local` currently holds the Stripe CLI local secret — swap for the dashboard webhook secret before any production deployment
-
+- **subscriptions table columns:** `user_id` (not `owner_id`), `tier` (not `plan`), `subscriber_type`, `billing_interval`
+- **Never use `owner_id` or `plan`** — these columns do not exist on the subscriptions table
+- **Correct values for owner trial:** `subscriber_type = 'owner'`, `tier = 'essentials'`, `billing_interval = 'annual'`, `status = 'trialing'`
 ---
 
 ## Active Properties (as of Sprint 18)
@@ -276,6 +278,7 @@ Run after prior month closes. Never re-pull historical years.
 npx ts-node scripts/ingest-airdna.ts --mode refresh --market 30a
 ```
 `entire_place` filter is the default. Pass `--no-filter` for diagnostic use only.
+
 
 ---
 
