@@ -4,7 +4,7 @@ globs:
 alwaysApply: true
 ---
 # VeroSTR — Cursor Standing Rules
-# Analytics Framework Spec v1.4 | Schema v0.19 | Sprint 18
+# Analytics Framework Spec v1.4 | Schema v0.19 | Sprint 19
 # Read this before touching any analytics, dashboard, upload, or billing code.
 
 ---
@@ -107,14 +107,6 @@ All three are day-weighted rates, not daily fractions. Aggregation uses day-weig
 SUM(benchmark_revpar * overlap_days) / NULLIF(SUM(overlap_days), 0)
 ```
 
-### market_benchmarks — submarket_id (v0.19)
-```
-NULL submarket_id  = market-level benchmark row (all pre-v0.19 rows)
-Non-null           = submarket-level benchmark row
-```
-Market-level queries must filter `WHERE submarket_id IS NULL` to preserve pre-migration behavior.
-Submarket-level (future): `WHERE submarket_id = :airdna_submarket_id`.
-
 ### market_benchmarks — no date columns, derive from week_number + year
 ```
 ❌ week_start_date — this column does not exist
@@ -131,6 +123,15 @@ GREATEST(0,
   LEAST(week_end, period_end::date) - GREATEST(week_start, period_start::date)
 ) AS overlap_days
 ```
+
+### market_benchmarks — submarket vs. market-level query
+```
+✅ Submarket-level: WHERE market_id = :market_id AND submarket_id = :submarket_id
+✅ Market-level:    WHERE market_id = :market_id AND submarket_id IS NULL
+❌ Never mix submarket and market-level rows in the same aggregation
+```
+`properties.airdna_submarket_id` — populated via zip lookup from `submarket_zip_codes`.
+NULL = submarket not resolved → fall back to market-level benchmark.
 
 ### Benchmark chart guard — applies to BOTH analytics page and dashboard
 Only include benchmark weeks where the week's Monday month has `data_complete = true`
@@ -153,6 +154,23 @@ JOIN property_coverage_months pcm
 ```
 An ISO week spanning two months is attributed to the month its Monday falls in.
 
+### Coverage completeness — Case 1 / Case 2 (built Sprint 18)
+Logic lives in `lib/coverage-completeness.ts`. Evaluate per property — never cross-property.
+
+```
+Case 1 — flip data_complete = true immediately on upload:
+  Last booking checkout date is in a future month (crosses boundary)
+  AND upload_date >= that booking's check_in date (guest has checked in)
+
+Case 2 — flip data_complete = true when calendar closes:
+  Last booking checkout is within the current month being evaluated
+  OR last booking crosses boundary but upload_date < check_in (cancellation still possible)
+  → data_complete = true only when CURRENT_DATE >= first day of following month
+```
+Re-evaluation pass runs on dashboard load — flips eligible Case 2 months without requiring re-upload.
+Soft note at portfolio level when `CURRENT_DATE >= first of following month` AND `data_complete = false`:
+`"Booking data for [Month YYYY] may not be up to date — upload a new file to refresh."`
+
 ### Index card — built Sprint 17
 Card order: **Gross Revenue | RevPAR | Occ% | ADR | Index**
 
@@ -163,14 +181,10 @@ Index = Math.round((property_revpar / benchmarkRevPAR) × 100)
 - `benchmarkRevPAR` is returned by `computePeriodStats` as `number | null`
 - No YoY delta on the Index card
 - Subtext: "vs. market benchmark"
-- Index currently running 42–50 across CYTD/LTM/LFY — likely AirDNA submarket airdna-2116
-  (Rosemary Beach) skewing high relative to Inlet Beach properties. Not a bug.
-  Revisit when second PM data is available for comparison.
-- **Coverage completeness — Case 1:** Last booking checkout in a future month AND upload_date >= check-in → data_complete = true immediately on upload
-- **Coverage completeness — Case 2:** Last checkout within current month → data_complete = true only when CURRENT_DATE >= first day of following month
-- **Coverage re-evaluation:** Runs on dashboard load — flips eligible Case 2 months without re-upload
-- **market_benchmarks submarket query:** WHERE submarket_id = :id for submarket-level. WHERE submarket_id IS NULL for market-level. Never mix.
-- **properties.airdna_submarket_id:** Populated via zip lookup from submarket_zip_codes. NULL = falls back to market-level benchmark.
+- Index currently running 42–50 — confirmed submarket mismatch (airdna-2116 Rosemary Beach skews
+  high), not a calculation error. Submarket architecture in place (Row 181 complete).
+  Index trend + decomposition (Row 159) deferred until Row 182 complete.
+
 ---
 
 ## Period Framework — CYTD / LTM / LFY
@@ -208,31 +222,6 @@ regardless of which toggle is selected. Delta is hidden (not shown as zero) if p
 - Zero-booking months within PM tenure = `data_complete = true` (valid covered data)
 - Future months never receive `data_complete = true`
 - All period queries must check `property_coverage_months` before computing metrics
-- Evaluate `data_complete` **per property** — one property's cross-month booking must never affect another property's completeness
-
-### Case 1 / Case 2 — upload completeness logic (Row 179)
-
-Evaluated per property on upload (`app/dashboard/upload/page.tsx`) and on dashboard load re-evaluation (`lib/coverage-completeness.ts`).
-
-**Case 1 — definitively closed (set `data_complete = true` immediately on upload):**
-- Among bookings overlapping the month, the latest checkout crosses into a future month, AND
-- `upload_date >= that booking's check_in date` (guest already checked in — cancellation risk gone)
-
-**Case 2 — may still have open bookings (wait for calendar to close):**
-- Latest checkout falls within the month being evaluated, OR
-- Latest checkout crosses the boundary but `upload_date < check_in date`
-- Set `data_complete = true` only when `CURRENT_DATE >= first day of following month`
-
-**Re-evaluation pass:** On dashboard load, re-evaluate rows where `data_complete = false` and the calendar month has closed — flip Case 2 months without requiring re-upload.
-
-**Rendering rule (never lock, always degrade):** Once `CURRENT_DATE >= first day of the following month`, render the month regardless of `data_complete`. Portfolio-level soft note only on dashboard and analytics pages:
-`"Booking data for [Month YYYY] may not be up to date — upload a new file to refresh."`
-
-### Schema v0.19 — submarket zip lookup
-
-- **`submarket_zip_codes`** — maps `market_id` + `zip_code` → AirDNA `submarket_id`
-- **`properties.airdna_submarket_id`** — resolved from `properties.zip` via lookup; NULL falls back to market-level benchmark
-- **`market_benchmarks.submarket_id`** — NULL = market-level row; non-null = submarket-level row
 
 ---
 
@@ -252,9 +241,10 @@ Evaluated per property on upload (`app/dashboard/upload/page.tsx`) and on dashbo
 - **subscriptions table columns:** `user_id` (not `owner_id`), `tier` (not `plan`), `subscriber_type`, `billing_interval`
 - **Never use `owner_id` or `plan`** — these columns do not exist on the subscriptions table
 - **Correct values for owner trial:** `subscriber_type = 'owner'`, `tier = 'essentials'`, `billing_interval = 'annual'`, `status = 'trialing'`
+
 ---
 
-## Active Properties (as of Sprint 18)
+## Active Properties (as of Sprint 19)
 
 | Owner | Property | PM | Property ID |
 |-------|----------|----|-------------|
@@ -265,7 +255,9 @@ Evaluated per property on upload (`app/dashboard/upload/page.tsx`) and on dashbo
 
 PM ID: `fe991b0b-7219-4e70-9351-82fe6e09ff31` (Oversee)
 PM relationship start date: 2023-10-23 for all four properties.
-AirDNA submarket: `airdna-2116` (Rosemary Beach / 30a) for `market_id = '30a'`
+AirDNA submarket: `airdna-2116` (Rosemary Beach / 30A) — all four properties assigned via zip 32461.
+Second submarket in schema: `airdna-136` (Santa Rosa Beach / 30A) — zip 32459.
+Submarket benchmark data not yet ingested — requires AirDNA API active.
 
 ---
 
@@ -285,10 +277,9 @@ AirDNA submarket: `airdna-2116` (Rosemary Beach / 30a) for `market_id = '30a'`
 | Billing rates lib | `lib/billing-rates.ts` |
 | Performance Summary cards | `components/performance-summary-cards.tsx` |
 | Period stats lib | `lib/period-stats.ts` |
-| Coverage completeness lib | `lib/coverage-completeness.ts` |
-| Submarket zip migration | `supabase/migrations/20260605000000_submarket_zip_codes_v019.sql` |
 | Brand icon generator | `scripts/generate-brand-icons.mjs` |
 | 404 page | `app/not-found.tsx` |
+| Coverage completeness lib | `lib/coverage-completeness.ts` |
 
 ---
 
@@ -302,18 +293,15 @@ Unless there is an explicit decision in the spec, do not build:
 - **Pacing view** — future bookings vs. forecast. Phase 2.
 - **PM billing tiers** (Growth / Professional / Enterprise) — Phase 2. Owner billing ships first.
 - **CYTD forecast comparison** — Phase 2. Period structure is in place; only the comparison series changes.
-- **RevPAR Index normalization / bedroom cohort** — Phase 2 refinement.
-- **Row 182 — market vs. submarket benchmark toggle UI** — depends on submarket benchmark data (ingest not yet updated); deferred post-Row 181 migration.
-- **Row 159 — Index trend chart** — depends on Rows 181 + 182 complete.
-- **Submarket benchmark ingest** — requires active AirDNA API subscription + updated `scripts/ingest-airdna.ts`; not built in Sprint 18.
-- **Property creation zip lookup UI** — not needed until second market launches.
 - **Quarter toggle** — removed in v1.4. Do not re-add.
 - **All Time toggle** — removed in v1.4. Do not re-add.
 - **favicon.ico** — must be in `app/favicon.ico`. Next.js serves `app/` before `public/`. Replacing only `public/favicon.ico` has no effect on the browser tab icon.
 - **Owner value proposition page** — post-MVP marketing asset. Narrative/capability framing, not a calculator. Gate: TOS live + first independent owner validated end-to-end.
-- **Row 182 — market vs. submarket toggle UI:** Blocked until submarket benchmark data ingested (requires AirDNA API active + ingest script updated for submarket rows)
-- **submarket_zip_codes seed:** Incomplete — only 32461 (airdna-2116) and 32459 (airdna-136) confirmed. Additional 30A zips pending AirDNA API boundary confirmation.
-- **pg_cron re-evaluation:** Deferred to Phase 2. Server action on dashboard load is sufficient for MVP.
+- **Row 182 — market vs. submarket benchmark toggle UI** — blocked until submarket benchmark data ingested. Requires AirDNA API active and ingest script updated for submarket rows.
+- **Row 159 — Index trend chart + ADR/Occ decomposition** — blocked until Row 182 complete.
+- **submarket_zip_codes full seed** — incomplete. Only zip 32461 (airdna-2116) and zip 32459 (airdna-136) confirmed. Additional 30A zips pending AirDNA API boundary confirmation.
+- **pg_cron monthly re-evaluation** — deferred to Phase 2. Dashboard load server action is sufficient for MVP volume.
+
 ---
 
 ## AirDNA Monthly Refresh
@@ -324,7 +312,6 @@ npx ts-node scripts/ingest-airdna.ts --mode refresh --market 30a
 ```
 `entire_place` filter is the default. Pass `--no-filter` for diagnostic use only.
 
-
 ---
 
-*VeroSTR | verostr.mdc | Schema v0.19 | Analytics Spec v1.4 | Sprint 18*
+*VeroSTR | verostr.mdc | Schema v0.19 | Analytics Spec v1.4 | Sprint 19*
