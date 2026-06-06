@@ -166,7 +166,11 @@ Index = Math.round((property_revpar / benchmarkRevPAR) × 100)
 - Index currently running 42–50 across CYTD/LTM/LFY — likely AirDNA submarket airdna-2116
   (Rosemary Beach) skewing high relative to Inlet Beach properties. Not a bug.
   Revisit when second PM data is available for comparison.
-
+- **Coverage completeness — Case 1:** Last booking checkout in a future month AND upload_date >= check-in → data_complete = true immediately on upload
+- **Coverage completeness — Case 2:** Last checkout within current month → data_complete = true only when CURRENT_DATE >= first day of following month
+- **Coverage re-evaluation:** Runs on dashboard load — flips eligible Case 2 months without re-upload
+- **market_benchmarks submarket query:** WHERE submarket_id = :id for submarket-level. WHERE submarket_id IS NULL for market-level. Never mix.
+- **properties.airdna_submarket_id:** Populated via zip lookup from submarket_zip_codes. NULL = falls back to market-level benchmark.
 ---
 
 ## Period Framework — CYTD / LTM / LFY
@@ -307,7 +311,9 @@ Unless there is an explicit decision in the spec, do not build:
 - **All Time toggle** — removed in v1.4. Do not re-add.
 - **favicon.ico** — must be in `app/favicon.ico`. Next.js serves `app/` before `public/`. Replacing only `public/favicon.ico` has no effect on the browser tab icon.
 - **Owner value proposition page** — post-MVP marketing asset. Narrative/capability framing, not a calculator. Gate: TOS live + first independent owner validated end-to-end.
-
+- **Row 182 — market vs. submarket toggle UI:** Blocked until submarket benchmark data ingested (requires AirDNA API active + ingest script updated for submarket rows)
+- **submarket_zip_codes seed:** Incomplete — only 32461 (airdna-2116) and 32459 (airdna-136) confirmed. Additional 30A zips pending AirDNA API boundary confirmation.
+- **pg_cron re-evaluation:** Deferred to Phase 2. Server action on dashboard load is sufficient for MVP.
 ---
 
 ## AirDNA Monthly Refresh
