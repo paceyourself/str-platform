@@ -6,6 +6,13 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import PmManagerCard from "@/components/PmManagerCard";
 import { PerformanceSummaryCards } from "@/components/performance-summary-cards";
+import {
+  coverageHoles,
+  formatMonthHeading as formatCoverageMonthHeading,
+  reEvaluateIncompleteCoverageMonths,
+  staleIncompleteCoverageMonths,
+  type CoverageBookingRow,
+} from "@/lib/coverage-completeness";
 import { computePeriodStats, pctDelta, type PeriodStats } from "@/lib/period-stats";
 import {
   CartesianGrid,
@@ -273,16 +280,6 @@ function buildCoverageMap(rows: CoverageRow[]): Map<string, CoverageRow> {
     m.set(monthKey(Number(c.coverage_year), Number(c.coverage_month)), c);
   }
   return m;
-}
-
-function coverageHoles(
-  covMap: Map<string, CoverageRow>,
-  months: CalendarMonth[],
-): CalendarMonth[] {
-  return months.filter((mk) => {
-    const r = covMap.get(monthKey(mk.year, mk.month));
-    return !(r?.data_complete || r?.admin_override);
-  });
 }
 
 function propertyPeriodComplete(
@@ -766,7 +763,29 @@ export default function DashboardPage() {
       console.error(covRes.error);
       setCoverage([]);
     } else {
-      setCoverage((covRes.data as CoverageRow[]) ?? []);
+      let coverageRows = (covRes.data as CoverageRow[]) ?? [];
+      const { updated, error: reEvalErr } =
+        await reEvaluateIncompleteCoverageMonths(
+          supabase,
+          coverageRows,
+          (bookRes.data ?? []) as CoverageBookingRow[],
+        );
+      if (reEvalErr) {
+        console.warn("[dashboard] coverage re-eval:", reEvalErr);
+      } else if (updated > 0) {
+        const { data: refreshed, error: refreshErr } = await supabase
+          .from("property_coverage_months")
+          .select(
+            "property_id, pm_id, coverage_year, coverage_month, data_complete, admin_override",
+          )
+          .in("property_id", propertyIds);
+        if (refreshErr) {
+          console.warn("[dashboard] coverage refresh:", refreshErr);
+        } else {
+          coverageRows = (refreshed as CoverageRow[]) ?? coverageRows;
+        }
+      }
+      setCoverage(coverageRows);
     }
     setCovLoading(false);
   }, [properties, supabase]);
@@ -871,6 +890,16 @@ export default function DashboardPage() {
     }
     return buildCoverageMap(unionRows);
   }, [properties, coverage, pmByProperty]);
+
+  const staleCoverageMonths = useMemo(
+    () =>
+      staleIncompleteCoverageMonths(
+        coverage,
+        properties.map((p) => p.id),
+        pmByProperty,
+      ),
+    [coverage, properties, pmByProperty],
+  );
 
   const coverageInclusionByMode = useMemo(() => {
     type Rec = {
@@ -1405,6 +1434,16 @@ export default function DashboardPage() {
             Analytics →
           </Link>
         </div>
+
+        {staleCoverageMonths.length > 0 ? (
+          <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-100">
+            Booking data for{" "}
+            {staleCoverageMonths
+              .map((m) => formatCoverageMonthHeading(m.year, m.month))
+              .join(", ")}{" "}
+            may not be up to date — upload a new file to refresh.
+          </div>
+        ) : null}
 
         <div className="mt-4 inline-flex flex-wrap gap-2">
           {(Object.keys(PERIOD_TOGGLE_DEF) as PeriodMode[]).map((mode) => {

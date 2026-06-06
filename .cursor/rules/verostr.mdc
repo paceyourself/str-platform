@@ -4,7 +4,7 @@ globs:
 alwaysApply: true
 ---
 # VeroSTR — Cursor Standing Rules
-# Analytics Framework Spec v1.4 | Schema v0.18 | Sprint 18
+# Analytics Framework Spec v1.4 | Schema v0.19 | Sprint 18
 # Read this before touching any analytics, dashboard, upload, or billing code.
 
 ---
@@ -15,7 +15,7 @@ alwaysApply: true
 - **Stack:** Next.js 16, Supabase/Postgres, Vercel, TypeScript
 - **Repo:** github.com/paceyourself/str-platform
 - **Live:** verostr.com
-- **Schema version:** v0.18 (40 tables)
+- **Schema version:** v0.19 (41 tables)
 - **Analytics spec:** v1.4 (STR_Analytics_Framework_Spec_Current.docx — authoritative)
 
 ---
@@ -107,6 +107,14 @@ All three are day-weighted rates, not daily fractions. Aggregation uses day-weig
 SUM(benchmark_revpar * overlap_days) / NULLIF(SUM(overlap_days), 0)
 ```
 
+### market_benchmarks — submarket_id (v0.19)
+```
+NULL submarket_id  = market-level benchmark row (all pre-v0.19 rows)
+Non-null           = submarket-level benchmark row
+```
+Market-level queries must filter `WHERE submarket_id IS NULL` to preserve pre-migration behavior.
+Submarket-level (future): `WHERE submarket_id = :airdna_submarket_id`.
+
 ### market_benchmarks — no date columns, derive from week_number + year
 ```
 ❌ week_start_date — this column does not exist
@@ -196,6 +204,31 @@ regardless of which toggle is selected. Delta is hidden (not shown as zero) if p
 - Zero-booking months within PM tenure = `data_complete = true` (valid covered data)
 - Future months never receive `data_complete = true`
 - All period queries must check `property_coverage_months` before computing metrics
+- Evaluate `data_complete` **per property** — one property's cross-month booking must never affect another property's completeness
+
+### Case 1 / Case 2 — upload completeness logic (Row 179)
+
+Evaluated per property on upload (`app/dashboard/upload/page.tsx`) and on dashboard load re-evaluation (`lib/coverage-completeness.ts`).
+
+**Case 1 — definitively closed (set `data_complete = true` immediately on upload):**
+- Among bookings overlapping the month, the latest checkout crosses into a future month, AND
+- `upload_date >= that booking's check_in date` (guest already checked in — cancellation risk gone)
+
+**Case 2 — may still have open bookings (wait for calendar to close):**
+- Latest checkout falls within the month being evaluated, OR
+- Latest checkout crosses the boundary but `upload_date < check_in date`
+- Set `data_complete = true` only when `CURRENT_DATE >= first day of following month`
+
+**Re-evaluation pass:** On dashboard load, re-evaluate rows where `data_complete = false` and the calendar month has closed — flip Case 2 months without requiring re-upload.
+
+**Rendering rule (never lock, always degrade):** Once `CURRENT_DATE >= first day of the following month`, render the month regardless of `data_complete`. Portfolio-level soft note only on dashboard and analytics pages:
+`"Booking data for [Month YYYY] may not be up to date — upload a new file to refresh."`
+
+### Schema v0.19 — submarket zip lookup
+
+- **`submarket_zip_codes`** — maps `market_id` + `zip_code` → AirDNA `submarket_id`
+- **`properties.airdna_submarket_id`** — resolved from `properties.zip` via lookup; NULL falls back to market-level benchmark
+- **`market_benchmarks.submarket_id`** — NULL = market-level row; non-null = submarket-level row
 
 ---
 
@@ -248,6 +281,8 @@ AirDNA submarket: `airdna-2116` (Rosemary Beach / 30a) for `market_id = '30a'`
 | Billing rates lib | `lib/billing-rates.ts` |
 | Performance Summary cards | `components/performance-summary-cards.tsx` |
 | Period stats lib | `lib/period-stats.ts` |
+| Coverage completeness lib | `lib/coverage-completeness.ts` |
+| Submarket zip migration | `supabase/migrations/20260605000000_submarket_zip_codes_v019.sql` |
 | Brand icon generator | `scripts/generate-brand-icons.mjs` |
 | 404 page | `app/not-found.tsx` |
 
@@ -264,6 +299,10 @@ Unless there is an explicit decision in the spec, do not build:
 - **PM billing tiers** (Growth / Professional / Enterprise) — Phase 2. Owner billing ships first.
 - **CYTD forecast comparison** — Phase 2. Period structure is in place; only the comparison series changes.
 - **RevPAR Index normalization / bedroom cohort** — Phase 2 refinement.
+- **Row 182 — market vs. submarket benchmark toggle UI** — depends on submarket benchmark data (ingest not yet updated); deferred post-Row 181 migration.
+- **Row 159 — Index trend chart** — depends on Rows 181 + 182 complete.
+- **Submarket benchmark ingest** — requires active AirDNA API subscription + updated `scripts/ingest-airdna.ts`; not built in Sprint 18.
+- **Property creation zip lookup UI** — not needed until second market launches.
 - **Quarter toggle** — removed in v1.4. Do not re-add.
 - **All Time toggle** — removed in v1.4. Do not re-add.
 - **favicon.ico** — must be in `app/favicon.ico`. Next.js serves `app/` before `public/`. Replacing only `public/favicon.ico` has no effect on the browser tab icon.
@@ -282,4 +321,4 @@ npx ts-node scripts/ingest-airdna.ts --mode refresh --market 30a
 
 ---
 
-*VeroSTR | verostr.mdc | Schema v0.18 | Analytics Spec v1.4 | Sprint 18*
+*VeroSTR | verostr.mdc | Schema v0.19 | Analytics Spec v1.4 | Sprint 18*

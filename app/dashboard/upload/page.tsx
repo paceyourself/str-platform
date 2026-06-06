@@ -1,5 +1,11 @@
 "use client";
 
+import {
+  calendarMonthsInclusiveInFileSpan,
+  computeDataCompleteForMonth,
+  parseDateOnlyLocal,
+  type CoverageBookingRow,
+} from "@/lib/coverage-completeness";
 import { createClient } from "@/lib/supabase";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import Papa from "papaparse";
@@ -139,95 +145,6 @@ function parseDateValue(raw: string): string | null {
 
 const DATE_DB_COLUMNS = new Set(["check_in", "check_out", "booked_date"]);
 
-/** Local date at noon — avoids TZ drift parsing YYYY-MM-DD. */
-function parseDateOnlyLocal(isoPrefix: string): Date | null {
-  const ymd =
-    /^(\d{4})-(\d{2})-(\d{2})(?:[^\d]|$)/.exec(String(isoPrefix).trim());
-  if (!ymd) return null;
-  const y = Number(ymd[1]);
-  const mo = Number(ymd[2]);
-  const d = Number(ymd[3]);
-  const dt = new Date(y, mo - 1, d, 12, 0, 0);
-  if (
-    dt.getFullYear() !== y ||
-    dt.getMonth() !== mo - 1 ||
-    dt.getDate() !== d
-  ) {
-    return null;
-  }
-  return dt;
-}
-
-/**
- * Months strictly before the calendar month containing `now`.
- * Completed months only (never the current partial month).
- */
-function isCalendarMonthFullyClosedBeforeNow(
-  coverageYear: number,
-  coverageMonth: number,
-  now = new Date(),
-): boolean {
-  const cy = now.getFullYear();
-  const cm = now.getMonth() + 1;
-  return coverageYear < cy || (coverageYear === cy && coverageMonth < cm);
-}
-
-/**
- * Nights [check_in, check_out); collect distinct calendar months that overlap any night.
- */
-function calendarMonthsOverlappingStay(
-  checkInIso: string | null | undefined,
-  checkOutIso: string | null | undefined,
-): { coverage_year: number; coverage_month: number }[] {
-  const ci = parseDateOnlyLocal(String(checkInIso ?? ""));
-  const co = parseDateOnlyLocal(String(checkOutIso ?? ""));
-  if (!ci || !co) return [];
-  if (!(co > ci)) return [];
-
-  const seen = new Set<string>();
-  const out: { coverage_year: number; coverage_month: number }[] = [];
-  let cur = new Date(ci.getTime());
-
-  while (cur < co) {
-    const y = cur.getFullYear();
-    const m = cur.getMonth() + 1;
-    const key = `${y}-${m}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      out.push({ coverage_year: y, coverage_month: m });
-    }
-    cur.setDate(cur.getDate() + 1);
-  }
-
-  return out.sort(
-    (a, b) =>
-      a.coverage_year - b.coverage_year || a.coverage_month - b.coverage_month,
-  );
-}
-
-/** Inclusive calendar months from the month containing minDate through the month containing maxDate. */
-function calendarMonthsInclusiveInFileSpan(
-  minDate: Date,
-  maxDate: Date,
-): { coverage_year: number; coverage_month: number }[] {
-  const startY = minDate.getFullYear();
-  const startM = minDate.getMonth() + 1;
-  const endY = maxDate.getFullYear();
-  const endM = maxDate.getMonth() + 1;
-  const out: { coverage_year: number; coverage_month: number }[] = [];
-  let y = startY;
-  let m = startM;
-  while (y < endY || (y === endY && m <= endM)) {
-    out.push({ coverage_year: y, coverage_month: m });
-    m += 1;
-    if (m > 12) {
-      m = 1;
-      y += 1;
-    }
-  }
-  return out;
-}
-
 async function upsertPropertyCoverageMonthsFromUpload(
   supabase: SupabaseClient,
   args: {
@@ -235,10 +152,12 @@ async function upsertPropertyCoverageMonthsFromUpload(
     uniquePayloads: Record<string, unknown>[];
     uploadBatchRows: { id: string; property_id: string }[];
     relStartDates: Record<string, string>;
+    propertyBookings: CoverageBookingRow[];
   },
 ): Promise<{ error: string | null }> {
   const now = new Date();
-  const { pmId, uniquePayloads, uploadBatchRows, relStartDates } = args;
+  const { pmId, uniquePayloads, uploadBatchRows, relStartDates, propertyBookings } =
+    args;
   const allRows: Record<string, unknown>[] = [];
 
   for (const batch of uploadBatchRows) {
@@ -267,7 +186,7 @@ async function upsertPropertyCoverageMonthsFromUpload(
 
     if (windowStart && windowEnd && windowEnd > windowStart) {
       for (const ym of calendarMonthsInclusiveInFileSpan(windowStart, windowEnd)) {
-        monthKey.add(`${ym.coverage_year}-${ym.coverage_month}`);
+        monthKey.add(`${ym.year}-${ym.month}`);
       }
     }
 
@@ -277,9 +196,12 @@ async function upsertPropertyCoverageMonthsFromUpload(
       const coverage_month = Number(ms);
       if (!Number.isFinite(coverage_year) || !Number.isFinite(coverage_month)) continue;
 
-      const data_complete = isCalendarMonthFullyClosedBeforeNow(
+      const data_complete = computeDataCompleteForMonth(
+        pid,
         coverage_year,
         coverage_month,
+        propertyBookings,
+        now,
         now,
       );
 
@@ -1312,16 +1234,27 @@ export default function BookingsUploadPage() {
           relStartDates[rid] = String(sd).trim();
         }
 
+        const { data: propertyBookings, error: bookingsFetchErr } = await supabase
+          .from("bookings")
+          .select("property_id, check_in, check_out, status")
+          .in("property_id", distinctPropertyIds);
+
+        if (bookingsFetchErr) {
+          console.error("[upload] bookings fetch for coverage:", bookingsFetchErr);
+          importSideEffectError = `Upload batch was saved, but coverage could not read bookings: ${bookingsFetchErr.message}`;
+        } else {
         const { error: coverageErr } =
           await upsertPropertyCoverageMonthsFromUpload(supabase, {
             pmId: selectedPmId,
             uniquePayloads,
             uploadBatchRows: createdBatches as { id: string; property_id: string }[],
             relStartDates,
+            propertyBookings: (propertyBookings ?? []) as CoverageBookingRow[],
           });
         if (coverageErr) {
           console.error("[upload] property_coverage_months upsert:", coverageErr);
           importSideEffectError = `Upload batch was saved, but coverage months failed to update: ${coverageErr}`;
+        }
         }
       }
     }

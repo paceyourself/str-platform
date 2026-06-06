@@ -9,6 +9,13 @@
 
 import Link from "next/link";
 import { PerformanceSummaryCards } from "@/components/performance-summary-cards";
+import {
+  coverageHoles,
+  formatMonthHeading as formatCoverageMonthHeading,
+  reEvaluateIncompleteCoverageMonths,
+  staleIncompleteCoverageMonths,
+  type CoverageBookingRow,
+} from "@/lib/coverage-completeness";
 import { createClient } from "@/lib/supabase";
 import { computePeriodStats, pctDelta, type PeriodStats } from "@/lib/period-stats";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -359,16 +366,6 @@ function buildCoverageMap(rows: CoverageRow[]): Map<string, CoverageRow> {
     m.set(monthKey(Number(c.coverage_year), Number(c.coverage_month)), c);
   }
   return m;
-}
-
-function coverageHoles(
-  covMap: Map<string, CoverageRow>,
-  months: CalendarMonth[],
-): CalendarMonth[] {
-  return months.filter((mk) => {
-    const r = covMap.get(monthKey(mk.year, mk.month));
-    return !(r?.data_complete || r?.admin_override);
-  });
 }
 
 function propertyPeriodComplete(
@@ -790,12 +787,16 @@ export default function AnalyticsPage() {
       ];
 
       setCovLoading(true);
-      const [covRes, bmRes, marketRes, pmRes] = await Promise.all([
+      const [covRes, bookResForCov, bmRes, marketRes, pmRes] = await Promise.all([
         supabase
           .from("property_coverage_months")
           .select(
             "property_id, pm_id, coverage_year, coverage_month, data_complete, admin_override",
           )
+          .in("property_id", propertyIds),
+        supabase
+          .from("bookings")
+          .select("property_id, check_in, check_out, status")
           .in("property_id", propertyIds),
         marketIds.length
           ? supabase
@@ -824,7 +825,30 @@ export default function AnalyticsPage() {
         console.error(covRes.error);
         setCoverage([]);
       } else {
-        setCoverage((covRes.data as CoverageRow[]) ?? []);
+        let coverageRows = (covRes.data as CoverageRow[]) ?? [];
+        const bookingRows = (bookResForCov.data ?? []) as CoverageBookingRow[];
+        const { updated, error: reEvalErr } =
+          await reEvaluateIncompleteCoverageMonths(
+            supabase,
+            coverageRows,
+            bookingRows,
+          );
+        if (reEvalErr) {
+          console.warn("[analytics] coverage re-eval:", reEvalErr);
+        } else if (updated > 0) {
+          const { data: refreshed, error: refreshErr } = await supabase
+            .from("property_coverage_months")
+            .select(
+              "property_id, pm_id, coverage_year, coverage_month, data_complete, admin_override",
+            )
+            .in("property_id", propertyIds);
+          if (refreshErr) {
+            console.warn("[analytics] coverage refresh:", refreshErr);
+          } else {
+            coverageRows = (refreshed as CoverageRow[]) ?? coverageRows;
+          }
+        }
+        setCoverage(coverageRows);
       }
 
       if (bmRes.error) {
@@ -895,6 +919,15 @@ export default function AnalyticsPage() {
     }
     return buildCoverageMap(unionCovRows);
   }, [scopedProperties, coverage, pmByProperty]);
+
+  const staleCoverageMonths = useMemo(() => {
+    if (viewLevel !== "portfolio") return [];
+    return staleIncompleteCoverageMonths(
+      coverage,
+      properties.map((p) => p.id),
+      pmByProperty,
+    );
+  }, [viewLevel, coverage, properties, pmByProperty]);
 
   const bookingsByProperty = useMemo(() => {
     const m = new Map<string, BookingRow[]>();
@@ -1716,6 +1749,16 @@ export default function AnalyticsPage() {
 
           {hideBenchmarkSeries && activeKpiTab !== "revenue" ? (
             <BenchmarkMissingBanner />
+          ) : null}
+
+          {staleCoverageMonths.length > 0 ? (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-100">
+              Booking data for{" "}
+              {staleCoverageMonths
+                .map((m) => formatCoverageMonthHeading(m.year, m.month))
+                .join(", ")}{" "}
+              may not be up to date — upload a new file to refresh.
+            </div>
           ) : null}
 
           <section className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950 dark:shadow-none">
