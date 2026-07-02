@@ -181,8 +181,9 @@ Index = Math.round((property_revpar / benchmarkRevPAR) × 100)
 - `benchmarkRevPAR` is returned by `computePeriodStats` as `number | null`
 - No YoY delta on the Index card
 - Subtext: "vs. market benchmark"
-- Index currently running 42–50 — confirmed submarket mismatch (airdna-2116 Rosemary Beach skews
-  high), not a calculation error. Submarket architecture in place (Row 181 complete).
+- Index currently shows — (em dash) — market_benchmarks rows are unlicensed AirDNA test data
+  that must be cleared before production launch (Row 211). Index will display correctly
+  once licensed benchmark data is ingested from confirmed vendor.
   Index trend + decomposition (Row 159) deferred until Row 182 complete.
 
 ---
@@ -297,7 +298,8 @@ Unless there is an explicit decision in the spec, do not build:
 - **All Time toggle** — removed in v1.4. Do not re-add.
 - **favicon.ico** — must be in `app/favicon.ico`. Next.js serves `app/` before `public/`. Replacing only `public/favicon.ico` has no effect on the browser tab icon.
 - **Owner value proposition page** — post-MVP marketing asset. Narrative/capability framing, not a calculator. Gate: TOS live + first independent owner validated end-to-end.
-- **Row 182 — market vs. submarket benchmark toggle UI** — blocked until submarket benchmark data ingested. Requires AirDNA API active and ingest script updated for submarket rows.
+- **Market benchmark display** — DO NOT display benchmark overlay or Index card value to owners until licensed benchmark data is ingested. The 175 AirDNA rows in `market_benchmarks` are unlicensed test data (AirDNA formally declined to license). Run `DELETE FROM market_benchmarks WHERE source = 'airdna_api'` before production launch (Row 211). Benchmark feature is architecturally complete — schema, UI, and ingestion script are ready. Only licensed data is missing. When vendor confirmed: run ingestion script once, flip feature flag. No sprint work required at that point.
+- **Row 182 — market vs. submarket benchmark toggle UI** — blocked until licensed benchmark data ingested from confirmed vendor.
 - **Row 159 — Index trend chart + ADR/Occ decomposition** — blocked until Row 182 complete.
 - **submarket_zip_codes full seed** — incomplete. Only zip 32461 (airdna-2116) and zip 32459 (airdna-136) confirmed. Additional 30A zips pending AirDNA API boundary confirmation.
 - **pg_cron monthly re-evaluation** — deferred to Phase 2. Dashboard load server action is sufficient for MVP volume.
@@ -311,6 +313,31 @@ Run after prior month closes. Never re-pull historical years.
 npx ts-node scripts/ingest-airdna.ts --mode refresh --market 30a
 ```
 `entire_place` filter is the default. Pass `--no-filter` for diagnostic use only.
+
+---
+
+## Sprint Close-Out — Two Files to Update
+
+At the end of every dev chat, update **both** files before committing:
+
+### 1. verostr.mdc (every sprint)
+- Footer: sprint number only
+- Key File Locations: add any new files created
+- Calculation Rules: add new rules, column realities, async patterns
+- Scope Guards: update completed "deferred" items to built status
+- Search entire file for any columns renamed or removed this sprint
+- Do not reformat sections not touched this sprint
+
+### 2. CLAUDE.md (when structural changes occur)
+Update only if any of the following changed this sprint:
+- Schema version incremented
+- New key files or scripts created
+- New STR data rules established
+- Supabase connection conventions changed
+
+If nothing structural changed, state "CLAUDE.md — no changes needed" explicitly.
+
+**Output a full diff of both files. Provide one git commit command covering both.**
 
 ---
 
