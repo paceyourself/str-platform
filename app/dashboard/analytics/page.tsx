@@ -824,16 +824,14 @@ export default function AnalyticsPage() {
               .eq("source", "airdna_api")
               .eq("granularity", "monthly_prorated")
           : Promise.resolve({ data: [], error: null }),
-        marketIds.length
-          ? supabase
-              .from("markets")
-              .select("id, name")
-              .filter(
-                "id",
-                "in",
-                `(${marketIds.map((id) => `"${String(id).replace(/"/g, '\\"')}"`).join(",")})`,
-              )
-          : Promise.resolve({ data: [], error: null }),
+        marketIds.length === 0
+          ? Promise.resolve({ data: [], error: null })
+          : marketIds.length === 1
+            ? supabase
+                .from("markets")
+                .select("id, display_name")
+                .eq("id", marketIds[0])
+            : supabase.from("markets").select("id, display_name").in("id", marketIds),
         pmIds.length
           ? supabase
               .from("pm_profiles")
@@ -897,8 +895,11 @@ export default function AnalyticsPage() {
 
       if (!marketRes.error && marketRes.data) {
         const ml = new Map<string, string>();
-        for (const row of marketRes.data as { id: string; name?: string | null }[]) {
-          ml.set(row.id, row.name ?? "");
+        for (const row of marketRes.data as {
+          id: string;
+          display_name?: string | null;
+        }[]) {
+          ml.set(row.id, row.display_name ?? "");
         }
         setMarketLabels(ml);
       }
