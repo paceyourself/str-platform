@@ -594,8 +594,6 @@ export default function AnalyticsPage() {
   const [selectedPropertyId, setSelectedPropertyId] = useState("");
   const [bookingsLoading, setBookingsLoading] = useState(false);
   const [bookings, setBookings] = useState<BookingRow[]>([]);
-  const [covLoading, setCovLoading] = useState(false);
-  const [coverage, setCoverage] = useState<CoverageRow[]>([]);
   const [benchmarkByMarket, setBenchmarkByMarket] = useState<
     Map<string, BenchmarkRow[]>
   >(() => new Map());
@@ -610,8 +608,10 @@ export default function AnalyticsPage() {
   );
 
   const [periodMode, setPeriodMode] = useState<PeriodMode>("cytd");
-  const [activeKpiTab, setActiveKpiTab] = useState<KpiTab>("revenue");
+  const [coverage, setCoverage] = useState<CoverageRow[]>([]);
+  const [covLoading, setCovLoading] = useState(false);
   const periodDefaultedRef = useRef(false);
+  const [activeKpiTab, setActiveKpiTab] = useState<KpiTab>("revenue");
 
 
   const loadPropertiesChain = useCallback(async () => {
@@ -1106,12 +1106,11 @@ export default function AnalyticsPage() {
   );
 
   useEffect(() => {
-    if (viewLevel !== "portfolio") return;
     periodDefaultedRef.current = false;
-  }, [properties.length, viewLevel]);
+  }, [properties.length]);
 
   useEffect(() => {
-    if (covLoading || scopedProperties.length === 0) return;
+    if (covLoading || properties.length === 0) return;
     if (periodDefaultedRef.current) return;
     const ok = resolveDefaultPeriodMode({
       periodWindows,
@@ -1124,7 +1123,7 @@ export default function AnalyticsPage() {
     }
   }, [
     covLoading,
-    scopedProperties.length,
+    properties.length,
     periodWindows,
     unionCoverageMap,
     coverageInclusionByMode,
