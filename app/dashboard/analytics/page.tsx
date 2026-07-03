@@ -765,7 +765,22 @@ export default function AnalyticsPage() {
     );
   }, [properties, selectedMarketId, selectedPmIdView, pmByProperty]);
 
+  const coverageFetchKey = useMemo(() => {
+    if (properties.length === 0) return "";
+    const propIds = properties
+      .map((p) => p.id)
+      .filter(Boolean)
+      .sort()
+      .join(",");
+    const pmPairs = [...pmByProperty.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([pid, pmId]) => `${pid}:${pmId}`)
+      .join(",");
+    return `${propIds}|${pmPairs}`;
+  }, [properties, pmByProperty]);
+
   useEffect(() => {
+    console.log("COV EFFECT FIRED", properties.length, covLoading);
     let cancel = false;
     (async () => {
       if (!properties.length) {
@@ -810,7 +825,14 @@ export default function AnalyticsPage() {
               .eq("granularity", "monthly_prorated")
           : Promise.resolve({ data: [], error: null }),
         marketIds.length
-          ? supabase.from("markets").select("id, name").in("id", marketIds)
+          ? supabase
+              .from("markets")
+              .select("id, name")
+              .filter(
+                "id",
+                "in",
+                `(${marketIds.map((id) => `"${String(id).replace(/"/g, '\\"')}"`).join(",")})`,
+              )
           : Promise.resolve({ data: [], error: null }),
         pmIds.length
           ? supabase
@@ -819,7 +841,10 @@ export default function AnalyticsPage() {
               .in("id", pmIds)
           : Promise.resolve({ data: [], error: null }),
       ]);
-      if (cancel) return;
+      if (cancel) {
+        setCovLoading(false);
+        return;
+      }
 
       if (covRes.error) {
         console.error(covRes.error);
@@ -851,6 +876,7 @@ export default function AnalyticsPage() {
         setCoverage(coverageRows);
       }
       setCovLoading(false);
+      console.log("COV LOADING FALSE SET");
 
       if (bmRes.error) {
         console.error(bmRes.error);
@@ -891,7 +917,7 @@ export default function AnalyticsPage() {
     return () => {
       cancel = true;
     };
-  }, [properties, pmByProperty, supabase]);
+  }, [coverageFetchKey, supabase]);
 
   const lcm = useMemo(() => lastCompletedCalendarMonth(), []);
 
@@ -1110,6 +1136,11 @@ export default function AnalyticsPage() {
   }, [properties.length]);
 
   useEffect(() => {
+    console.log("RESOLVER EFFECT FIRED", {
+      covLoading,
+      propertiesLength: properties.length,
+      periodDefaulted: periodDefaultedRef.current,
+    });
     if (covLoading || properties.length === 0) return;
     if (periodDefaultedRef.current) return;
     const ok = resolveDefaultPeriodMode({
