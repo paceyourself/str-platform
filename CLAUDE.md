@@ -15,8 +15,10 @@ STR owner analytics and PM accountability SaaS. Owners upload booking CSVs; plat
 |------|---------|
 | `.cursor/rules/verostr.mdc` | **Read first.** Standing invariants for analytics, billing, schema. |
 | `lib/period-stats.ts` | Period calculations (CYTD/LTM/LFY). Async — always await. |
+| `lib/period-default.ts` | Shared CYTD → LTM → LFY default resolver for dashboard + analytics. |
 | `lib/coverage-completeness.ts` | `data_complete` Case 1/2 logic. Never bypass. |
-| `lib/billing-rates.ts` | Reads pricing from `platform_pricing` table. Never hardcode prices. |
+| `lib/billing-rates.ts` | Reads pricing from `platform_pricing` via `get_current_rate({ rate_key })`. Never hardcode prices. |
+| `components/owner-dashboard-nav.tsx` | Owner nav; Billing + Sign out in user menu dropdown. |
 | `scripts/ingest-airdna.ts` | AirDNA benchmark ingestion. Run monthly after prior month closes. |
 | `scripts/generate-brand-icons.mjs` | Generates favicon and apple-touch-icon. |
 

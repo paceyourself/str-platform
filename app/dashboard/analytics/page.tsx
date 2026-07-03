@@ -17,6 +17,7 @@ import {
   type CoverageBookingRow,
 } from "@/lib/coverage-completeness";
 import { createClient } from "@/lib/supabase";
+import { resolveDefaultPeriodMode } from "@/lib/period-default";
 import { computePeriodStats, pctDelta, type PeriodStats } from "@/lib/period-stats";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -1105,39 +1106,28 @@ export default function AnalyticsPage() {
   );
 
   useEffect(() => {
+    if (viewLevel !== "portfolio") return;
     periodDefaultedRef.current = false;
-  }, [viewLevel, selectedMarketId, selectedPmIdView, selectedPropertyId]);
+  }, [properties.length, viewLevel]);
 
   useEffect(() => {
-    if (covLoading || !scopedProperties.length) return;
+    if (covLoading || scopedProperties.length === 0) return;
     if (periodDefaultedRef.current) return;
-    periodDefaultedRef.current = true;
-    const order: PeriodMode[] = ["cytd", "ltm", "lfy"];
-    const ok = order.find((m) => {
-      if (m === "cytd") {
-        const { curr, prior } = periodWindows.cytd;
-        const currentYear = new Date().getFullYear();
-        if (curr.length === 0) return false;
-        const anyCompleteCurr = curr.some((mo) => {
-          const r = unionCoverageMap.get(monthKey(mo.year, mo.month));
-          return r?.data_complete || r?.admin_override;
-        });
-        if (!anyCompleteCurr) return false;
-        return coverageHoles(unionCoverageMap, prior).length === 0;
-      }
-      return coverageInclusionByMode[m].currIncluded > 0;
+    const ok = resolveDefaultPeriodMode({
+      periodWindows,
+      unionCoverageMap,
+      coverageInclusionByMode,
     });
-    if (ok) setPeriodMode(ok);
+    if (ok) {
+      periodDefaultedRef.current = true;
+      setPeriodMode(ok);
+    }
   }, [
-    viewLevel,
-    selectedMarketId,
-    selectedPmIdView,
-    selectedPropertyId,
     covLoading,
-    coverageInclusionByMode,
     scopedProperties.length,
-    periodWindows.cytd,
+    periodWindows,
     unionCoverageMap,
+    coverageInclusionByMode,
   ]);
 
   useEffect(() => {
@@ -1854,7 +1844,11 @@ export default function AnalyticsPage() {
             <div className="mt-4 h-72 w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart data={chartDatum}>
-                  <CartesianGrid strokeDasharray="3 3" className="opacity-60" />
+                  <CartesianGrid
+                    strokeDasharray="2 6"
+                    stroke="#a1a1aa"
+                    strokeOpacity={0.18}
+                  />
                   <XAxis dataKey="name" stroke="#71717a" fontSize={12} />
                   <YAxis
                     stroke="#71717a"
@@ -1896,7 +1890,7 @@ export default function AnalyticsPage() {
                       <Line
                         type="monotone"
                         dataKey="primary"
-                        name="Current"
+                        name="Current period"
                         stroke="#2563eb"
                         strokeWidth={2.5}
                         dot={false}
@@ -1906,33 +1900,44 @@ export default function AnalyticsPage() {
                         <Line
                           type="monotone"
                           dataKey="prior"
-                          name="Prior"
-                          stroke="#2563eb"
+                          name="Prior period"
+                          stroke="#94a3b8"
                           strokeWidth={1.5}
                           strokeDasharray="5 4"
                           dot={false}
                           connectNulls
                         />
                       ) : null}
-                      {!hideBenchmarkSeries &&
-                      ["revpar", "occ", "adr"].includes(activeKpiTab) ? (
+                      {["revpar", "occ", "adr"].includes(activeKpiTab) ? (
                         <Line
                           type="monotone"
                           dataKey="benchmark"
-                          name="Market ben."
+                          name="Market benchmark"
                           stroke="#a1a1aa"
                           strokeWidth={1}
                           strokeDasharray="6 4"
                           dot={false}
                           connectNulls
+                          hide={hideBenchmarkSeries}
                         />
                       ) : null}
                     </>
                   )}
 
                   <Tooltip
-                    formatter={(v) =>
-                      typeof v === "number" ? v.toFixed(2) : "—"}
+                    formatter={(value, name) => {
+                      const label =
+                        name === "Current period"
+                          ? "Current period"
+                          : name === "Prior period"
+                            ? "Prior period"
+                            : name === "Market benchmark"
+                              ? "Market benchmark"
+                              : String(name);
+                      const formatted =
+                        typeof value === "number" ? value.toFixed(2) : "—";
+                      return [formatted, label];
+                    }}
                   />
                   <Legend wrapperStyle={{ fontSize: "12px" }} />
                 </ComposedChart>

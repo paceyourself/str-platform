@@ -5,7 +5,12 @@ import {
   getTrialDays,
 } from "@/lib/billing-rates";
 import { createClient } from "@/lib/supabase-server";
+import type { Metadata } from "next";
 import { redirect } from "next/navigation";
+
+export const metadata: Metadata = {
+  title: "Billing",
+};
 
 const ACTIVE_STATUSES = ["trialing", "active", "past_due"] as const;
 
@@ -37,11 +42,22 @@ export default async function BillingPage() {
     .in("status", [...ACTIVE_STATUSES])
     .maybeSingle();
 
-  const [monthlyRate, annualRate, trialDays] = await Promise.all([
-    getOwnerEssentialsMonthlyRate(supabase),
-    getOwnerEssentialsAnnualRate(supabase),
-    getTrialDays(supabase),
-  ]);
+  let monthlyRate = 0;
+  let annualRate = 0;
+  let trialDays = 0;
+  let ratesError: string | null = null;
+
+  try {
+    [monthlyRate, annualRate, trialDays] = await Promise.all([
+      getOwnerEssentialsMonthlyRate(supabase),
+      getOwnerEssentialsAnnualRate(supabase),
+      getTrialDays(supabase),
+    ]);
+  } catch (err) {
+    console.error("[billing] rate load:", err);
+    ratesError =
+      "Billing rates could not be loaded. Please contact support@verostr.com.";
+  }
 
   return (
     <BillingCheckout
@@ -50,6 +66,7 @@ export default async function BillingPage() {
       trialDays={trialDays}
       existingSubscription={existingSub}
       userEmail={user.email ?? ""}
+      ratesError={ratesError}
     />
   );
 }

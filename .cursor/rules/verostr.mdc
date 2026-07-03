@@ -198,7 +198,7 @@ Both the analytics page (`/dashboard/analytics`) and the dashboard (`/dashboard`
 | LTM | Last 12 complete months | 12 months before that (PLTM) | All 24 months complete |
 | LFY | Last full calendar year | Calendar year before that | All 24 months complete |
 
-**Default on load:** CYTD if available → LTM → LFY → locked state with LTM progress indicator.
+**Default on load:** CYTD if available → LTM → LFY → locked state with LTM progress indicator. Implemented via `resolveDefaultPeriodMode()` in `lib/period-default.ts` — shared by dashboard and analytics; do not duplicate logic.
 
 **CYTD period boundaries (TypeScript pattern):**
 ```ts
@@ -238,6 +238,8 @@ regardless of which toggle is selected. Delta is hidden (not shown as zero) if p
 - **Billing page gate:** Read `feature_flags` directly (not via `has_feature_access`) — `has_feature_access` requires an existing subscription; the billing page runs before one exists
 - **Annual price key:** `owner_essentials_annual` — read via `get_current_rate('owner_essentials_annual')`
 - **Monthly price key:** `owner_essentials_monthly` — read via `get_current_rate('owner_essentials_monthly')`
+- **`get_current_rate` RPC arg:** `{ rate_key: '...' }` — not `key`. Wrong arg returns null → UI showed $0 / 0-day trial (Sprint 19 fix in `lib/billing-rates.ts`)
+- **Invalid rates:** Reject `<= 0` for trial days and prices — show error UI, disable checkout (never display $0 from null coercion)
 - **STRIPE_WEBHOOK_SECRET:** `.env.local` currently holds the Stripe CLI local secret — swap for the dashboard webhook secret before any production deployment
 - **subscriptions table columns:** `user_id` (not `owner_id`), `tier` (not `plan`), `subscriber_type`, `billing_interval`
 - **Never use `owner_id` or `plan`** — these columns do not exist on the subscriptions table
@@ -276,6 +278,8 @@ Submarket benchmark data not yet ingested — requires AirDNA API active.
 | Webhook handler | `app/api/webhooks/stripe/route.ts` |
 | Webhook handlers lib | `lib/stripe-webhook-handlers.ts` |
 | Billing rates lib | `lib/billing-rates.ts` |
+| Period default resolver | `lib/period-default.ts` |
+| Owner dashboard nav | `components/owner-dashboard-nav.tsx` |
 | Performance Summary cards | `components/performance-summary-cards.tsx` |
 | Period stats lib | `lib/period-stats.ts` |
 | Brand icon generator | `scripts/generate-brand-icons.mjs` |

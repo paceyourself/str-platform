@@ -13,7 +13,10 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "VeroSTR",
+  title: {
+    default: "VeroSTR",
+    template: "%s | VeroSTR",
+  },
   description: "STR owner analytics and PM accountability platform.",
   openGraph: {
     title: "VeroSTR",

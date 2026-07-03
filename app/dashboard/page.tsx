@@ -13,11 +13,13 @@ import {
   staleIncompleteCoverageMonths,
   type CoverageBookingRow,
 } from "@/lib/coverage-completeness";
+import { resolveDefaultPeriodMode } from "@/lib/period-default";
 import { computePeriodStats, pctDelta, type PeriodStats } from "@/lib/period-stats";
 import {
   CartesianGrid,
   Line,
   LineChart,
+  Legend,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -938,26 +940,19 @@ export default function DashboardPage() {
   useEffect(() => {
     if (covLoading || properties.length === 0) return;
     if (periodDefaultedRef.current) return;
-    periodDefaultedRef.current = true;
-    const order: PeriodMode[] = ["cytd", "ltm", "lfy"];
-    const ok = order.find((m) => {
-      if (m === "cytd") {
-        const { curr, prior } = periodWindows.cytd;
-        if (curr.length === 0) return false;
-        const anyCompleteCurr = curr.some((mo) => {
-          const r = unionCoverageMap.get(monthKey(mo.year, mo.month));
-          return r?.data_complete || r?.admin_override;
-        });
-        if (!anyCompleteCurr) return false;
-        return coverageHoles(unionCoverageMap, prior).length === 0;
-      }
-      return coverageInclusionByMode[m].currIncluded > 0;
+    const ok = resolveDefaultPeriodMode({
+      periodWindows,
+      unionCoverageMap,
+      coverageInclusionByMode,
     });
-    if (ok) setPeriodMode(ok);
+    if (ok) {
+      periodDefaultedRef.current = true;
+      setPeriodMode(ok);
+    }
   }, [
     covLoading,
     properties.length,
-    periodWindows.cytd,
+    periodWindows,
     unionCoverageMap,
     coverageInclusionByMode,
   ]);
@@ -1520,7 +1515,11 @@ export default function DashboardPage() {
                   data={revparChartData}
                   margin={{ top: 8, right: 12, left: 4, bottom: 4 }}
                 >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e4e4e7" />
+                  <CartesianGrid
+                    strokeDasharray="2 6"
+                    stroke="#a1a1aa"
+                    strokeOpacity={0.18}
+                  />
                   <XAxis
                     dataKey="monthLabel"
                     tick={{ fontSize: 11, fill: "#71717a" }}
@@ -1551,46 +1550,46 @@ export default function DashboardPage() {
                             {label}
                           </p>
                           <p className="mt-1 text-blue-600 dark:text-blue-400">
-                            Property RevPAR:{" "}
+                            Current period:{" "}
                             {row.propertyRevpar != null
                               ? formatMoneyCompact(row.propertyRevpar)
                               : "—"}
                           </p>
                           {hasPriorRevparSeries ? (
-                            <p className="mt-1 text-blue-600 dark:text-blue-400">
-                              Prior period RevPAR:{" "}
+                            <p className="mt-1 text-zinc-500 dark:text-zinc-400">
+                              Prior period:{" "}
                               {row.priorPropertyRevpar != null
                                 ? formatMoneyCompact(row.priorPropertyRevpar)
                                 : "—"}
                             </p>
                           ) : null}
-                          {hasBenchmarkSeries ? (
-                            <p className="mt-1 text-zinc-600 dark:text-zinc-400">
-                              Market benchmark:{" "}
-                              {row.benchmarkRevpar != null
-                                ? formatMoneyCompact(row.benchmarkRevpar)
-                                : "—"}
-                            </p>
-                          ) : null}
+                          <p className="mt-1 text-zinc-500 dark:text-zinc-400">
+                            Market benchmark:{" "}
+                            {row.benchmarkRevpar != null
+                              ? formatMoneyCompact(row.benchmarkRevpar)
+                              : "—"}
+                          </p>
                         </div>
                       );
                     }}
                   />
+                  <Legend wrapperStyle={{ fontSize: "12px" }} />
                   <Line
                     type="monotone"
                     dataKey="propertyRevpar"
-                    name="Property RevPAR"
+                    name="Current period"
                     stroke="#2563eb"
                     strokeWidth={2.5}
                     dot={{ r: 3, fill: "#2563eb" }}
                     connectNulls={false}
+                    legendType="line"
                   />
                   {hasPriorRevparSeries ? (
                     <Line
                       type="monotone"
                       dataKey="priorPropertyRevpar"
-                      name="Prior period RevPAR"
-                      stroke="#2563eb"
+                      name="Prior period"
+                      stroke="#94a3b8"
                       strokeWidth={1.5}
                       strokeDasharray="5 4"
                       dot={false}

@@ -2,8 +2,13 @@ import {
   hasFeatureAccess,
 } from "@/lib/billing-rates";
 import { createClient } from "@/lib/supabase-server";
+import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
+
+export const metadata: Metadata = {
+  title: "Analytics",
+};
 
 export default async function AnalyticsLayout({
   children,

@@ -16,6 +16,7 @@ type Props = {
   trialDays: number;
   existingSubscription: ExistingSubscription | null;
   userEmail: string;
+  ratesError?: string | null;
 };
 
 function formatUsd(amount: number): string {
@@ -57,6 +58,7 @@ export function BillingCheckout({
   trialDays,
   existingSubscription,
   userEmail,
+  ratesError,
 }: Props) {
   const [loadingInterval, setLoadingInterval] = useState<
     "monthly" | "annual" | null
@@ -158,6 +160,15 @@ export function BillingCheckout({
         </p>
       </div>
 
+      {ratesError ? (
+        <p
+          className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100"
+          role="alert"
+        >
+          {ratesError}
+        </p>
+      ) : null}
+
       {error ? (
         <p
           className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200"
@@ -174,7 +185,7 @@ export function BillingCheckout({
           cadence="/ month"
           detail={`${trialDays}-day free trial, then ${formatUsd(monthlyRate)}/mo`}
           loading={loadingInterval === "monthly"}
-          disabled={loadingInterval !== null}
+          disabled={loadingInterval !== null || Boolean(ratesError)}
           onSelect={() => startCheckout("monthly")}
         />
         <PlanCard
@@ -184,7 +195,7 @@ export function BillingCheckout({
           detail={`${trialDays}-day free trial, then ${formatUsd(annualRate)}/yr`}
           badge="Best value"
           loading={loadingInterval === "annual"}
-          disabled={loadingInterval !== null}
+          disabled={loadingInterval !== null || Boolean(ratesError)}
           onSelect={() => startCheckout("annual")}
         />
       </div>
