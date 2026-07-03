@@ -55,46 +55,59 @@ export async function handleCheckoutSessionCompleted(
   }
 
   const existing = await subscriptionByStripeId(stripeSubscriptionId);
-  if (existing.data) return;
+  const admin = createAdminClient();
 
-  const userId = session.metadata?.user_id;
-  if (!userId) {
-    throw new Error("checkout.session.completed missing metadata.user_id");
+  if (!existing.data) {
+    const userId = session.metadata?.user_id;
+    if (!userId) {
+      throw new Error("checkout.session.completed missing metadata.user_id");
+    }
+
+    const stripe = getStripe();
+    const subscription = await stripe.subscriptions.retrieve(stripeSubscriptionId);
+    const billingInterval = priceIntervalFromSubscription(subscription);
+    const { periodStart, periodEnd } = extractSubscriptionPeriod(subscription);
+    const rateSnapshot = await getRateSnapshot(admin, billingInterval);
+
+    const { error } = await admin.from("subscriptions").insert({
+      user_id: userId,
+      subscriber_type: "owner",
+      tier: "essentials",
+      billing_interval: billingInterval,
+      status: "trialing",
+      stripe_customer_id:
+        typeof session.customer === "string"
+          ? session.customer
+          : session.customer?.id ?? null,
+      stripe_subscription_id: stripeSubscriptionId,
+      trial_ends_at: stripeTimestampToIso(subscription.trial_end),
+      current_period_start: periodStart,
+      current_period_end: periodEnd,
+      rate_snapshot: rateSnapshot,
+    });
+
+    if (error) {
+      if (error.code === "23505") {
+        console.info(
+          "[stripe webhook] duplicate subscription insert ignored",
+          stripeSubscriptionId,
+        );
+      } else {
+        throw new Error(error.message);
+      }
+    }
   }
 
-  const stripe = getStripe();
-  const subscription = await stripe.subscriptions.retrieve(stripeSubscriptionId);
-  const billingInterval = priceIntervalFromSubscription(subscription);
-  const { periodStart, periodEnd } = extractSubscriptionPeriod(subscription);
-  const admin = createAdminClient();
-  const rateSnapshot = await getRateSnapshot(admin, billingInterval);
+  const { error: tosError } = await admin
+    .from("subscriptions")
+    .update({
+      tos_version_accepted: session.metadata?.tos_version ?? null,
+      tos_accepted_at: new Date().toISOString(),
+    })
+    .eq("stripe_subscription_id", stripeSubscriptionId);
 
-  const { error } = await admin.from("subscriptions").insert({
-    user_id: userId,
-    subscriber_type: "owner",
-    tier: "essentials",
-    billing_interval: billingInterval,
-    status: "trialing",
-    stripe_customer_id:
-      typeof session.customer === "string"
-        ? session.customer
-        : session.customer?.id ?? null,
-    stripe_subscription_id: stripeSubscriptionId,
-    trial_ends_at: stripeTimestampToIso(subscription.trial_end),
-    current_period_start: periodStart,
-    current_period_end: periodEnd,
-    rate_snapshot: rateSnapshot,
-  });
-
-  if (error) {
-    if (error.code === "23505") {
-      console.info(
-        "[stripe webhook] duplicate subscription insert ignored",
-        stripeSubscriptionId,
-      );
-      return;
-    }
-    throw new Error(error.message);
+  if (tosError) {
+    throw new Error(tosError.message);
   }
 }
 

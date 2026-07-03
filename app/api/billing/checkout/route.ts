@@ -5,6 +5,7 @@ import { createClient } from "@/lib/supabase-server";
 import { NextResponse } from "next/server";
 
 const ACTIVE_STATUSES = ["trialing", "active", "past_due"] as const;
+const TOS_VERSION = "v1_direct_20260629";
 
 function priceIdForInterval(interval: BillingInterval): string {
   const envKey =
@@ -91,6 +92,7 @@ export async function POST(request: Request) {
       },
       metadata: {
         user_id: user.id,
+        tos_version: TOS_VERSION,
         subscriber_type: "owner",
         tier: "essentials",
       },
