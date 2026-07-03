@@ -281,6 +281,7 @@ Submarket benchmark data not yet ingested — requires AirDNA API active.
 | Brand icon generator | `scripts/generate-brand-icons.mjs` |
 | 404 page | `app/not-found.tsx` |
 | Coverage completeness lib | `lib/coverage-completeness.ts` |
+| Legal page shell | `components/legal/legal-page-shell.tsx` |
 
 ---
 
