@@ -780,7 +780,6 @@ export default function AnalyticsPage() {
   }, [properties, pmByProperty]);
 
   useEffect(() => {
-    console.log("COV EFFECT FIRED", properties.length, covLoading);
     let cancel = false;
     (async () => {
       if (!properties.length) {
@@ -874,7 +873,6 @@ export default function AnalyticsPage() {
         setCoverage(coverageRows);
       }
       setCovLoading(false);
-      console.log("COV LOADING FALSE SET");
 
       if (bmRes.error) {
         console.error(bmRes.error);
@@ -1137,12 +1135,8 @@ export default function AnalyticsPage() {
   }, [properties.length]);
 
   useEffect(() => {
-    console.log("RESOLVER EFFECT FIRED", {
-      covLoading,
-      propertiesLength: properties.length,
-      periodDefaulted: periodDefaultedRef.current,
-    });
     if (covLoading || properties.length === 0) return;
+    if (unionCoverageMap.size === 0) return;
     if (periodDefaultedRef.current) return;
     const ok = resolveDefaultPeriodMode({
       periodWindows,

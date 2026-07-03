@@ -39,8 +39,9 @@ export function resolveDefaultPeriodMode(args: {
           const r = unionCoverageMap.get(monthKey(mo.year, mo.month));
           return r?.data_complete || r?.admin_override;
         });
+        const priorHoles = coverageHoles(unionCoverageMap, prior);
         if (!anyCompleteCurr) return false;
-        return coverageHoles(unionCoverageMap, prior).length === 0;
+        return priorHoles.length === 0;
       }
       return coverageInclusionByMode[mode].currIncluded > 0;
     }) ?? null
