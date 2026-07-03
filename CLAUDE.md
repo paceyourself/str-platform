@@ -15,12 +15,12 @@ STR owner analytics and PM accountability SaaS. Owners upload booking CSVs; plat
 |------|---------|
 | `.cursor/rules/verostr.mdc` | **Read first.** Standing invariants for analytics, billing, schema. |
 | `lib/period-stats.ts` | Period calculations (CYTD/LTM/LFY). Async — always await. |
-| `lib/period-default.ts` | Shared CYTD → LTM → LFY default resolver for dashboard + analytics. |
 | `lib/coverage-completeness.ts` | `data_complete` Case 1/2 logic. Never bypass. |
-| `lib/billing-rates.ts` | Reads pricing from `platform_pricing` via `get_current_rate({ rate_key })`. Never hardcode prices. |
-| `components/owner-dashboard-nav.tsx` | Owner nav; Billing + Sign out in user menu dropdown. |
+| `lib/billing-rates.ts` | Reads pricing from `platform_pricing` table. Never hardcode prices. |
 | `scripts/ingest-airdna.ts` | AirDNA benchmark ingestion. Run monthly after prior month closes. |
 | `scripts/generate-brand-icons.mjs` | Generates favicon and apple-touch-icon. |
+| `lib/period-default.ts` | Shared CYTD→LTM→LFY period resolver. Used by dashboard and analytics. |
+| `components/legal/legal-page-shell.tsx` | Shared layout for all legal pages (/terms, /privacy, /privacy/ccpa, /settings). |
 
 ## Supabase Conventions
 - Use `supabase` client from `lib/supabase.ts`; admin operations use `lib/supabase-admin.ts`
@@ -35,6 +35,7 @@ STR owner analytics and PM accountability SaaS. Owners upload booking CSVs; plat
 - Future bookings excluded from all analytics via `check_in < CURRENT_DATE`
 - RevPAR denominator = `available_nights`; ADR denominator = `prorated_booked_nights` — never swap
 - `benchmark_occ` stored as 0–100 scale — do not divide by 100
+- `markets.display_name` — markets table name column is `display_name` not `name`; `name` does not exist
 
 ## AirDNA Benchmark Notes
 - `market_benchmarks` has no `week_start_date` column — derive via `to_date(year::text || '-' || week_number::text, 'IYYY-IW')`

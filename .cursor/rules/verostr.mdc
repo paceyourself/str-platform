@@ -4,7 +4,7 @@ globs:
 alwaysApply: true
 ---
 # VeroSTR — Cursor Standing Rules
-# Analytics Framework Spec v1.4 | Schema v0.19 | Sprint 19
+# Analytics Framework Spec v1.4 | Schema v0.19 | Sprint 20
 # Read this before touching any analytics, dashboard, upload, or billing code.
 
 ---
@@ -124,6 +124,41 @@ GREATEST(0,
 ) AS overlap_days
 ```
 
+### markets table — correct column names
+```
+✅ display_name — the market name column
+❌ name — this column does not exist on the markets table
+```
+Always select `id, display_name` when querying markets. Any code reading `market.name` must be updated to `market.display_name`.
+
+### markets table — PostgREST query pattern for text IDs
+```
+✅ .eq("id", marketIds[0])          — single market (avoids in() syntax failure on text IDs like '30a')
+✅ .in("id", marketIds)             — multiple markets (UUIDs or standard strings)
+❌ .in("id", ["30a"])               — fails: PostgREST mishandles non-numeric text in in() filter
+```
+
+### analytics coverage effect — stable dependency key required
+The coverage useEffect must depend on a stable primitive key, not object references:
+```ts
+// ✅ Correct — stable primitive derived from content
+const coverageFetchKey = useMemo(() => {
+  const propIds = properties.map(p => p.id).sort().join(",");
+  const pmPairs = [...pmByProperty.entries()].sort().map(([k,v]) => `${k}:${v}`).join(",");
+  return `${propIds}|${pmPairs}`;
+}, [properties, pmByProperty]);
+// useEffect deps: [coverageFetchKey, supabase]
+
+// ❌ Wrong — object references recreated on every render trigger infinite loop
+// useEffect deps: [properties, pmByProperty, supabase]
+```
+
+### period resolver — must wait for coverage data
+```
+✅ Guard: if (unionCoverageMap.size === 0) return;  — resolver must not fire before coverage loads
+❌ Firing resolver with empty unionCoverageMap locks in LTM via one-shot ref before CYTD data arrives
+```
+
 ### market_benchmarks — submarket vs. market-level query
 ```
 ✅ Submarket-level: WHERE market_id = :market_id AND submarket_id = :submarket_id
@@ -198,7 +233,7 @@ Both the analytics page (`/dashboard/analytics`) and the dashboard (`/dashboard`
 | LTM | Last 12 complete months | 12 months before that (PLTM) | All 24 months complete |
 | LFY | Last full calendar year | Calendar year before that | All 24 months complete |
 
-**Default on load:** CYTD if available → LTM → LFY → locked state with LTM progress indicator. Implemented via `resolveDefaultPeriodMode()` in `lib/period-default.ts` — shared by dashboard and analytics; do not duplicate logic.
+**Default on load:** CYTD if available → LTM → LFY → locked state with LTM progress indicator.
 
 **CYTD period boundaries (TypeScript pattern):**
 ```ts
@@ -238,8 +273,6 @@ regardless of which toggle is selected. Delta is hidden (not shown as zero) if p
 - **Billing page gate:** Read `feature_flags` directly (not via `has_feature_access`) — `has_feature_access` requires an existing subscription; the billing page runs before one exists
 - **Annual price key:** `owner_essentials_annual` — read via `get_current_rate('owner_essentials_annual')`
 - **Monthly price key:** `owner_essentials_monthly` — read via `get_current_rate('owner_essentials_monthly')`
-- **`get_current_rate` RPC arg:** `{ rate_key: '...' }` — not `key`. Wrong arg returns null → UI showed $0 / 0-day trial (Sprint 19 fix in `lib/billing-rates.ts`)
-- **Invalid rates:** Reject `<= 0` for trial days and prices — show error UI, disable checkout (never display $0 from null coercion)
 - **STRIPE_WEBHOOK_SECRET:** `.env.local` currently holds the Stripe CLI local secret — swap for the dashboard webhook secret before any production deployment
 - **subscriptions table columns:** `user_id` (not `owner_id`), `tier` (not `plan`), `subscriber_type`, `billing_interval`
 - **Never use `owner_id` or `plan`** — these columns do not exist on the subscriptions table
@@ -278,13 +311,13 @@ Submarket benchmark data not yet ingested — requires AirDNA API active.
 | Webhook handler | `app/api/webhooks/stripe/route.ts` |
 | Webhook handlers lib | `lib/stripe-webhook-handlers.ts` |
 | Billing rates lib | `lib/billing-rates.ts` |
-| Period default resolver | `lib/period-default.ts` |
-| Owner dashboard nav | `components/owner-dashboard-nav.tsx` |
 | Performance Summary cards | `components/performance-summary-cards.tsx` |
 | Period stats lib | `lib/period-stats.ts` |
 | Brand icon generator | `scripts/generate-brand-icons.mjs` |
 | 404 page | `app/not-found.tsx` |
 | Coverage completeness lib | `lib/coverage-completeness.ts` |
+| Period default resolver   | `lib/period-default.ts`         |
+| Legal page shell          | `components/legal/legal-page-shell.tsx` |
 
 ---
 
@@ -307,6 +340,7 @@ Unless there is an explicit decision in the spec, do not build:
 - **Row 159 — Index trend chart + ADR/Occ decomposition** — blocked until Row 182 complete.
 - **submarket_zip_codes full seed** — incomplete. Only zip 32461 (airdna-2116) and zip 32459 (airdna-136) confirmed. Additional 30A zips pending AirDNA API boundary confirmation.
 - **pg_cron monthly re-evaluation** — deferred to Phase 2. Dashboard load server action is sufficient for MVP volume.
+- **analytics_benchmarking flag architecture (Row 214)** — this flag currently gates BOTH analytics page access AND benchmark overlay display. These are two separate concerns. Fix in Sprint 20: add `analytics_page_access` flag (permanent active = true, never toggled) for page-level gating; repurpose `analytics_benchmarking` to control overlay display only. Do not change has_feature_access() logic until this design decision is resolved.
 
 ---
 
@@ -345,4 +379,4 @@ If nothing structural changed, state "CLAUDE.md — no changes needed" explicitl
 
 ---
 
-*VeroSTR | verostr.mdc | Schema v0.19 | Analytics Spec v1.4 | Sprint 19*
+*VeroSTR | verostr.mdc | Schema v0.19 | Analytics Spec v1.4 | Sprint 20*
