@@ -1,0 +1,15 @@
+DROP FUNCTION public.get_current_rate(text);
+
+CREATE OR REPLACE FUNCTION public.get_current_rate(rate_key text)
+RETURNS numeric
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $function$
+  SELECT value FROM platform_pricing p
+  WHERE p.rate_key = get_current_rate.rate_key
+    AND p.effective_date <= CURRENT_DATE
+  ORDER BY p.effective_date DESC
+  LIMIT 1;
+$function$;
