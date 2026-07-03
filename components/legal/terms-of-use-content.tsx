@@ -259,6 +259,10 @@ export function TermsOfUseContent({ variant }: { variant: TermsVariant }) {
         N. Wright St, Naperville, Illinois 60563.
       </LegalP>
       <LegalP>
+        VeroSTR&apos;s DMCA agent is registered with the U.S. Copyright Office
+        (Registration No. DMCA-1073562).
+      </LegalP>
+      <LegalP>
         Your notice of alleged copyright infringement should include the
         following:
       </LegalP>
