@@ -820,7 +820,6 @@ export default function AnalyticsPage() {
           : Promise.resolve({ data: [], error: null }),
       ]);
       if (cancel) return;
-      setCovLoading(false);
 
       if (covRes.error) {
         console.error(covRes.error);
@@ -851,6 +850,7 @@ export default function AnalyticsPage() {
         }
         setCoverage(coverageRows);
       }
+      setCovLoading(false);
 
       if (bmRes.error) {
         console.error(bmRes.error);
