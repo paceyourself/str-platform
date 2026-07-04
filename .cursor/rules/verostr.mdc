@@ -4,7 +4,7 @@ globs:
 alwaysApply: true
 ---
 # VeroSTR — Cursor Standing Rules
-# Analytics Framework Spec v1.4 | Schema v0.19 | Sprint 20
+# Analytics Framework Spec v1.4 | Schema v0.19 | Sprint 21
 # Read this before touching any analytics, dashboard, upload, or billing code.
 
 ---
@@ -273,7 +273,11 @@ regardless of which toggle is selected. Delta is hidden (not shown as zero) if p
 - **Billing page gate:** Read `feature_flags` directly (not via `has_feature_access`) — `has_feature_access` requires an existing subscription; the billing page runs before one exists
 - **Annual price key:** `owner_essentials_annual` — read via `get_current_rate('owner_essentials_annual')`
 - **Monthly price key:** `owner_essentials_monthly` — read via `get_current_rate('owner_essentials_monthly')`
-- **STRIPE_WEBHOOK_SECRET:** `.env.local` currently holds the Stripe CLI local secret — swap for the dashboard webhook secret before any production deployment
+- **STRIPE_WEBHOOK_SECRET:** `.env.local` holds the Stripe CLI local secret for local dev. Vercel Production holds the live endpoint secret from Stripe dashboard → Webhooks → VeroSTR Production → Signing secret.
+- **NEXT_PUBLIC_APP_URL:** Must be set to `https://verostr.com` in Vercel Production environment. `getAppBaseUrl()` in `lib/app-url.ts` falls back to `VERCEL_URL` if not set — which is a protected preview URL that causes Stripe post-checkout redirect to land on Vercel login screen.
+- **SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY:** Server-side only. Set in Vercel Production environment only — never `NEXT_PUBLIC_` variants. Required by `createAdminClient()` in `lib/supabase-admin.ts`. Used by webhook handler to write subscription rows. Missing these causes 500 on every webhook delivery.
+- **TOS_VERSION constant:** Defined in `app/api/billing/checkout/route.ts` as `const TOS_VERSION = 'v1_direct_20260629'`. Passed as Stripe session metadata. Webhook handler writes to `subscriptions.tos_version_accepted` on `checkout.session.completed`. Update this constant when TOS is revised.
+- **subscriptions table — TOS columns:** `tos_version_accepted text` and `tos_accepted_at timestamptz` added Sprint 20. Written by webhook handler on every `checkout.session.completed` — idempotent across new insert, existing row, and duplicate (23505) paths.
 - **subscriptions table columns:** `user_id` (not `owner_id`), `tier` (not `plan`), `subscriber_type`, `billing_interval`
 - **Never use `owner_id` or `plan`** — these columns do not exist on the subscriptions table
 - **Correct values for owner trial:** `subscriber_type = 'owner'`, `tier = 'essentials'`, `billing_interval = 'annual'`, `status = 'trialing'`
@@ -318,6 +322,8 @@ Submarket benchmark data not yet ingested — requires AirDNA API active.
 | Coverage completeness lib | `lib/coverage-completeness.ts` |
 | Period default resolver   | `lib/period-default.ts`         |
 | Legal page shell          | `components/legal/legal-page-shell.tsx` |
+| Supabase admin client     | `lib/supabase-admin.ts`                 |
+| App base URL helper       | `lib/app-url.ts`                        |
 
 ---
 
@@ -340,6 +346,7 @@ Unless there is an explicit decision in the spec, do not build:
 - **Row 159 — Index trend chart + ADR/Occ decomposition** — blocked until Row 182 complete.
 - **submarket_zip_codes full seed** — incomplete. Only zip 32461 (airdna-2116) and zip 32459 (airdna-136) confirmed. Additional 30A zips pending AirDNA API boundary confirmation.
 - **pg_cron monthly re-evaluation** — deferred to Phase 2. Dashboard load server action is sufficient for MVP volume.
+- **Duplicate Stripe customer risk (Row 219)** — checkout route does not check for existing Stripe customer by email before creating new one. Every failed/retried checkout creates an orphaned customer record. Fix before next real owner onboards: search by email before creating. Do not build any new checkout flow until this is fixed.
 - **analytics_benchmarking flag architecture (Row 214)** — this flag currently gates BOTH analytics page access AND benchmark overlay display. These are two separate concerns. Fix in Sprint 20: add `analytics_page_access` flag (permanent active = true, never toggled) for page-level gating; repurpose `analytics_benchmarking` to control overlay display only. Do not change has_feature_access() logic until this design decision is resolved.
 
 ---
@@ -379,4 +386,4 @@ If nothing structural changed, state "CLAUDE.md — no changes needed" explicitl
 
 ---
 
-*VeroSTR | verostr.mdc | Schema v0.19 | Analytics Spec v1.4 | Sprint 20*
+*VeroSTR | verostr.mdc | Schema v0.19 | Analytics Spec v1.4 | Sprint 21*

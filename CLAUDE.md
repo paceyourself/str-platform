@@ -21,6 +21,8 @@ STR owner analytics and PM accountability SaaS. Owners upload booking CSVs; plat
 | `scripts/generate-brand-icons.mjs` | Generates favicon and apple-touch-icon. |
 | `lib/period-default.ts` | Shared CYTD→LTM→LFY period resolver. Used by dashboard and analytics. |
 | `components/legal/legal-page-shell.tsx` | Shared layout for all legal pages (/terms, /privacy, /privacy/ccpa, /settings). |
+| `lib/supabase-admin.ts` | Admin Supabase client (SECURITY DEFINER). Requires SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY — never NEXT_PUBLIC_ variants. |
+| `lib/app-url.ts` | getAppBaseUrl() — reads NEXT_PUBLIC_APP_URL first. Must be set in Vercel Production or Stripe redirects to Vercel preview URL. |
 
 ## Supabase Conventions
 - Use `supabase` client from `lib/supabase.ts`; admin operations use `lib/supabase-admin.ts`
@@ -36,6 +38,7 @@ STR owner analytics and PM accountability SaaS. Owners upload booking CSVs; plat
 - RevPAR denominator = `available_nights`; ADR denominator = `prorated_booked_nights` — never swap
 - `benchmark_occ` stored as 0–100 scale — do not divide by 100
 - `markets.display_name` — markets table name column is `display_name` not `name`; `name` does not exist
+- `subscriptions.tos_version_accepted` + `tos_accepted_at` — written by webhook on `checkout.session.completed`. TOS_VERSION constant defined in `app/api/billing/checkout/route.ts`.
 
 ## AirDNA Benchmark Notes
 - `market_benchmarks` has no `week_start_date` column — derive via `to_date(year::text || '-' || week_number::text, 'IYYY-IW')`
