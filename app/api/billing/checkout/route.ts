@@ -9,7 +9,9 @@ const TOS_VERSION = "v1_direct_20260629";
 
 function priceIdForInterval(interval: BillingInterval): string {
   const envKey =
-    interval === "monthly" ? "STRIPE_PRICE_MONTHLY" : "STRIPE_PRICE_ANNUAL";
+    interval === "monthly"
+      ? "STRIPE_PRICE_OWNER_ESSENTIALS_MONTHLY"
+      : "STRIPE_PRICE_OWNER_ESSENTIALS_ANNUAL";
   const priceId = process.env[envKey]?.trim();
   if (!priceId) {
     throw new Error(`Missing ${envKey}`);
