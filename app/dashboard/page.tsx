@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import PmManagerCard from "@/components/PmManagerCard";
 import { PerformanceSummaryCards } from "@/components/performance-summary-cards";
+import { useBenchmarkDisplayEnabled } from "@/components/benchmark-display-context";
 import {
   coverageHoles,
   formatMonthHeading as formatCoverageMonthHeading,
@@ -447,6 +448,7 @@ export default function DashboardPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const supabase = createClient();
+  const benchmarkDisplayEnabled = useBenchmarkDisplayEnabled();
   const showSubscribedBanner = searchParams.get("subscribed") === "true";
 
   const [email, setEmail] = useState<string | null>(null);
@@ -1299,6 +1301,9 @@ export default function DashboardPage() {
     [revparChartData]
   );
 
+  const showBenchmarkSeries =
+    benchmarkDisplayEnabled && hasBenchmarkSeries;
+
   const propertyLabel = (p: PropertyRow) => {
     const primary =
       p.property_name?.trim() ||
@@ -1491,6 +1496,7 @@ export default function DashboardPage() {
                 ? priorDeltaTooltip
                 : undefined
             }
+            showBenchmarkIndex={benchmarkDisplayEnabled}
           />
           </div>
         )}
@@ -1563,12 +1569,14 @@ export default function DashboardPage() {
                                 : "—"}
                             </p>
                           ) : null}
-                          <p className="mt-1 text-zinc-500 dark:text-zinc-400">
-                            Market benchmark:{" "}
-                            {row.benchmarkRevpar != null
-                              ? formatMoneyCompact(row.benchmarkRevpar)
-                              : "—"}
-                          </p>
+                          {benchmarkDisplayEnabled ? (
+                            <p className="mt-1 text-zinc-500 dark:text-zinc-400">
+                              Market benchmark:{" "}
+                              {row.benchmarkRevpar != null
+                                ? formatMoneyCompact(row.benchmarkRevpar)
+                                : "—"}
+                            </p>
+                          ) : null}
                         </div>
                       );
                     }}
@@ -1596,7 +1604,7 @@ export default function DashboardPage() {
                       connectNulls={false}
                     />
                   ) : null}
-                  {hasBenchmarkSeries ? (
+                  {showBenchmarkSeries ? (
                     <Line
                       type="monotone"
                       dataKey="benchmarkRevpar"
@@ -1611,7 +1619,9 @@ export default function DashboardPage() {
                 </LineChart>
               </ResponsiveContainer>
             </div>
-            {!hasBenchmarkSeries && !benchmarkLoading ? (
+            {benchmarkDisplayEnabled &&
+            !hasBenchmarkSeries &&
+            !benchmarkLoading ? (
               <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
                 Benchmark data not yet loaded
               </p>

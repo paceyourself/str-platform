@@ -1,6 +1,5 @@
-import {
-  hasFeatureAccess,
-} from "@/lib/billing-rates";
+import { BenchmarkDisplayProvider } from "@/components/benchmark-display-context";
+import { hasFeatureAccess } from "@/lib/billing-rates";
 import { createClient } from "@/lib/supabase-server";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -24,14 +23,17 @@ export default async function AnalyticsLayout({
     redirect("/login");
   }
 
-  const hasAccess = await hasFeatureAccess(
-    supabase,
-    user.id,
-    "analytics_benchmarking",
-  );
+  const [hasAccess, benchmarkDisplayEnabled] = await Promise.all([
+    hasFeatureAccess(supabase, user.id, "analytics_page_access"),
+    hasFeatureAccess(supabase, user.id, "analytics_benchmark_display"),
+  ]);
 
   if (hasAccess) {
-    return children;
+    return (
+      <BenchmarkDisplayProvider enabled={benchmarkDisplayEnabled}>
+        {children}
+      </BenchmarkDisplayProvider>
+    );
   }
 
   const checkoutEnabled = await hasFeatureAccess(

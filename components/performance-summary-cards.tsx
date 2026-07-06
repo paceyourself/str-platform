@@ -11,6 +11,7 @@ export type PerformanceSummaryCardsProps = {
   periodLabel: string;
   priorDeltaTooltip?: string;
   loading?: boolean;
+  showBenchmarkIndex?: boolean;
 };
 
 function formatMoney(n: number) {
@@ -54,12 +55,14 @@ export function PerformanceSummaryCards({
   periodLabel,
   priorDeltaTooltip,
   loading,
+  showBenchmarkIndex = false,
 }: PerformanceSummaryCardsProps) {
   if (loading) {
     return <p className="mt-3 text-sm text-zinc-500">Loading bookings…</p>;
   }
 
   const index =
+    showBenchmarkIndex &&
     current.revpar != null &&
     current.benchmarkRevPAR != null &&
     current.benchmarkRevPAR > 0

@@ -9,6 +9,7 @@
 
 import Link from "next/link";
 import { PerformanceSummaryCards } from "@/components/performance-summary-cards";
+import { useBenchmarkDisplayEnabled } from "@/components/benchmark-display-context";
 import {
   coverageHoles,
   formatMonthHeading as formatCoverageMonthHeading,
@@ -586,6 +587,7 @@ type KpiTab = "revenue" | "revpar" | "occ" | "adr" | "index";
 
 export default function AnalyticsPage() {
   const supabase = useMemo(() => createClient(), []);
+  const benchmarkDisplayEnabled = useBenchmarkDisplayEnabled();
   const [propsLoading, setPropsLoading] = useState(true);
   const [properties, setProperties] = useState<PropertyRow[]>([]);
   const [viewLevel, setViewLevel] = useState<ViewLevel>("portfolio");
@@ -1225,6 +1227,7 @@ export default function AnalyticsPage() {
     periodPack;
 
   const benchmarkAvailable = useMemo(() => {
+    if (!benchmarkDisplayEnabled) return false;
     const marketIds = new Set<string>();
     for (const p of scopedProperties) {
       const mid = (p.market_id ?? "").trim();
@@ -1243,7 +1246,7 @@ export default function AnalyticsPage() {
       }
     }
     return false;
-  }, [scopedProperties, benchmarkByMarket]);
+  }, [benchmarkDisplayEnabled, scopedProperties, benchmarkByMarket]);
 
   const hideBenchmarkSeries = !benchmarkAvailable;
 
@@ -1536,13 +1539,17 @@ export default function AnalyticsPage() {
     return Math.max(peak, 150);
   }, [activeKpiTab, chartDatum]);
 
-  const kpiTabs: KpiTab[] = [
-    "revenue",
-    "revpar",
-    "occ",
-    "adr",
-    "index",
-  ];
+  const kpiTabs: KpiTab[] = useMemo(() => {
+    const tabs: KpiTab[] = ["revenue", "revpar", "occ", "adr"];
+    if (benchmarkDisplayEnabled) tabs.push("index");
+    return tabs;
+  }, [benchmarkDisplayEnabled]);
+
+  useEffect(() => {
+    if (!benchmarkDisplayEnabled && activeKpiTab === "index") {
+      setActiveKpiTab("revenue");
+    }
+  }, [benchmarkDisplayEnabled, activeKpiTab]);
 
   if (propsLoading && !properties.length) {
     return (
@@ -1762,7 +1769,9 @@ export default function AnalyticsPage() {
             </div>
           ) : null}
 
-          {hideBenchmarkSeries && activeKpiTab !== "revenue" ? (
+          {benchmarkDisplayEnabled &&
+          hideBenchmarkSeries &&
+          activeKpiTab !== "revenue" ? (
             <BenchmarkMissingBanner />
           ) : null}
 
@@ -1836,6 +1845,7 @@ export default function AnalyticsPage() {
                   ? priorDeltaTooltip
                   : undefined
               }
+              showBenchmarkIndex={benchmarkDisplayEnabled}
             />
             )}
             </div>

@@ -267,6 +267,8 @@ regardless of which toggle is selected. Delta is hidden (not shown as zero) if p
 - **Never hardcode 90** (or any trial duration) anywhere in application code
 - **Prices:** Always read from `platform_pricing` — never hardcoded in UI or API
 - **Feature flags:** Always read `stripe_checkout_enabled` from `feature_flags` table at runtime — not from env vars or hardcoded booleans
+- **Analytics page access:** Gate `/dashboard/analytics` via `has_feature_access(..., 'analytics_page_access')` in `app/dashboard/analytics/layout.tsx`. Default `active = true` in `feature_flags` (Row 214).
+- **Benchmark display:** Gate benchmark chart overlay and Index card value via `has_feature_access(..., 'analytics_benchmark_display')` through `BenchmarkDisplayProvider` in dashboard and analytics layouts. Default `active = false` until licensed vendor data is ingested (Row 211).
 - **Owner billing before PM billing** — PM Growth/Professional/Enterprise tiers are Phase 2
 - **Subscription access rule:** `status IN ('trialing', 'active')` = allow. All other statuses = prompt to subscribe.
 - **Webhook idempotency:** Use Stripe event ID to deduplicate. Stripe can deliver the same event more than once.
@@ -316,6 +318,7 @@ Submarket benchmark data not yet ingested — requires AirDNA API active.
 | Webhook handlers lib | `lib/stripe-webhook-handlers.ts` |
 | Billing rates lib | `lib/billing-rates.ts` |
 | Performance Summary cards | `components/performance-summary-cards.tsx` |
+| Benchmark display context | `components/benchmark-display-context.tsx` |
 | Period stats lib | `lib/period-stats.ts` |
 | Brand icon generator | `scripts/generate-brand-icons.mjs` |
 | 404 page | `app/not-found.tsx` |
@@ -341,13 +344,12 @@ Unless there is an explicit decision in the spec, do not build:
 - **All Time toggle** — removed in v1.4. Do not re-add.
 - **favicon.ico** — must be in `app/favicon.ico`. Next.js serves `app/` before `public/`. Replacing only `public/favicon.ico` has no effect on the browser tab icon.
 - **Owner value proposition page** — post-MVP marketing asset. Narrative/capability framing, not a calculator. Gate: TOS live + first independent owner validated end-to-end.
-- **Market benchmark display** — DO NOT display benchmark overlay or Index card value to owners until licensed data is ingested. AirDNA rows in `market_benchmarks` are unlicensed — retained as validation reference for testing alternative vendors, NOT deleted. Gate via `analytics_benchmarking` feature flag: confirm `active = false` in production Supabase before launch (Row 211). Flip to `active = true` the moment licensed vendor data is ingested. Flag must gate BOTH the benchmark chart overlay AND the Index card value. When vendor confirmed: run ingestion script, verify rows, flip flag. No sprint work required at that point.
+- **Market benchmark display** — DO NOT display benchmark overlay or Index card value to owners until licensed data is ingested. AirDNA rows in `market_benchmarks` are unlicensed — retained as validation reference for testing alternative vendors, NOT deleted. Gate via `analytics_benchmark_display` feature flag: confirm `active = false` in production Supabase before launch (Row 211). Flip to `active = true` the moment licensed vendor data is ingested. Flag must gate BOTH the benchmark chart overlay AND the Index card value. When vendor confirmed: run ingestion script, verify rows, flip flag. No sprint work required at that point.
 - **Row 182 — market vs. submarket benchmark toggle UI** — blocked until licensed benchmark data ingested from confirmed vendor.
 - **Row 159 — Index trend chart + ADR/Occ decomposition** — blocked until Row 182 complete.
 - **submarket_zip_codes full seed** — incomplete. Only zip 32461 (airdna-2116) and zip 32459 (airdna-136) confirmed. Additional 30A zips pending AirDNA API boundary confirmation.
 - **pg_cron monthly re-evaluation** — deferred to Phase 2. Dashboard load server action is sufficient for MVP volume.
-- **Duplicate Stripe customer risk (Row 219)** — checkout route does not check for existing Stripe customer by email before creating new one. Every failed/retried checkout creates an orphaned customer record. Fix before next real owner onboards: search by email before creating. Do not build any new checkout flow until this is fixed.
-- **analytics_benchmarking flag architecture (Row 214)** — this flag currently gates BOTH analytics page access AND benchmark overlay display. These are two separate concerns. Fix in Sprint 20: add `analytics_page_access` flag (permanent active = true, never toggled) for page-level gating; repurpose `analytics_benchmarking` to control overlay display only. Do not change has_feature_access() logic until this design decision is resolved.
+- **Duplicate Stripe customer risk (Row 219)** — RESOLVED Sprint 21. Checkout route searches Stripe by email before creating session.
 
 ---
 

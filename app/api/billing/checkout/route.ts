@@ -80,9 +80,22 @@ export async function POST(request: Request) {
   const stripe = getStripe();
 
   try {
+    const email = user.email?.trim();
+    let customerId: string | undefined;
+
+    if (email) {
+      const existing = await stripe.customers.search({
+        query: `email:'${email.replace(/'/g, "\\'")}'`,
+      });
+      customerId =
+        existing.data.length > 0 ? existing.data[0].id : undefined;
+    }
+
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
-      customer_email: user.email ?? undefined,
+      ...(customerId
+        ? { customer: customerId }
+        : { customer_email: email ?? undefined }),
       line_items: [{ price: stripePriceId, quantity: 1 }],
       subscription_data: {
         trial_period_days: trialDays,
