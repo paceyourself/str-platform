@@ -39,6 +39,7 @@ STR owner analytics and PM accountability SaaS. Owners upload booking CSVs; plat
 - `benchmark_occ` stored as 0–100 scale — do not divide by 100
 - `markets.display_name` — markets table name column is `display_name` not `name`; `name` does not exist
 - `subscriptions.tos_version_accepted` + `tos_accepted_at` — written by webhook on `checkout.session.completed`. TOS_VERSION constant defined in `app/api/billing/checkout/route.ts`.
+- `feature_flags.owner_tiers text[]` + `pm_tiers text[]` — must be populated on every new flag INSERT; control which subscription tiers the flag applies to, separate from `active`. Omitting/mis-populating doesn't error, it silently mis-scopes the flag.
 
 ## AirDNA Benchmark Notes
 - `market_benchmarks` has no `week_start_date` column — derive via `to_date(year::text || '-' || week_number::text, 'IYYY-IW')`

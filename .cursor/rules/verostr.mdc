@@ -283,7 +283,7 @@ regardless of which toggle is selected. Delta is hidden (not shown as zero) if p
 - **subscriptions table columns:** `user_id` (not `owner_id`), `tier` (not `plan`), `subscriber_type`, `billing_interval`
 - **Never use `owner_id` or `plan`** — these columns do not exist on the subscriptions table
 - **Correct values for owner trial:** `subscriber_type = 'owner'`, `tier = 'essentials'`, `billing_interval = 'annual'`, `status = 'trialing'`
-
+- **feature_flags — owner_tiers / pm_tiers columns:** `feature_flags` has `owner_tiers text[]` and `pm_tiers text[]` columns that must be populated on every new flag INSERT — they control which subscription tiers the flag applies to, separate from the `active` boolean. Omitting or mis-populating these does not error but silently scopes the flag incorrectly. Discovered undocumented Sprint 21 while building Row 214 (owner_tiers required: essentials/portfolio/investor for owner-facing flags; pm_tiers empty array for owner-only flags).
 ---
 
 ## Active Properties (as of Sprint 19)
