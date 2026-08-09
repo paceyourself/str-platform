@@ -54,6 +54,27 @@ function relationshipStartFromRel(startDate: string | null | undefined): string 
   return m ? m[1] : null;
 }
 
+function VerifyPropertyPrompt() {
+  return (
+    <div className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+      <p className="text-sm text-zinc-800 dark:text-zinc-200">
+        Verify this property to submit a review
+      </p>
+      <p className="mt-3 text-sm">
+        <Link
+          href="/settings"
+          className="font-medium text-zinc-900 underline underline-offset-2 hover:text-zinc-700 dark:text-zinc-50 dark:hover:text-zinc-200"
+        >
+          Go to Settings
+        </Link>{" "}
+        <span className="text-zinc-600 dark:text-zinc-400">
+          to submit ownership verification.
+        </span>
+      </p>
+    </div>
+  );
+}
+
 export default function NewOwnerReviewPage() {
   const router = useRouter();
   const supabase = createClient();
@@ -67,6 +88,86 @@ export default function NewOwnerReviewPage() {
   const [periodEnd, setPeriodEnd] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  /** UX-only gate: maps relationship id → property verification_status */
+  const [relVerification, setRelVerification] = useState<
+    Record<string, string>
+  >({});
+  const [verificationLoading, setVerificationLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setVerificationLoading(true);
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) {
+        if (!cancelled) {
+          setRelVerification({});
+          setVerificationLoading(false);
+        }
+        return;
+      }
+
+      const { data: rels, error: relErr } = await supabase
+        .from("owner_pm_relationships")
+        .select("id, property_id")
+        .eq("owner_id", user.id)
+        .eq("active", true);
+
+      if (cancelled) return;
+      if (relErr || !rels?.length) {
+        setRelVerification({});
+        setVerificationLoading(false);
+        return;
+      }
+
+      const propertyIds = [
+        ...new Set(
+          rels
+            .map((r) => r.property_id as string | null)
+            .filter((id): id is string => Boolean(id)),
+        ),
+      ];
+
+      if (propertyIds.length === 0) {
+        setRelVerification({});
+        setVerificationLoading(false);
+        return;
+      }
+
+      const { data: props, error: propErr } = await supabase
+        .from("properties")
+        .select("id, verification_status")
+        .in("id", propertyIds);
+
+      if (cancelled) return;
+      if (propErr || !props) {
+        setRelVerification({});
+        setVerificationLoading(false);
+        return;
+      }
+
+      const statusByProperty = new Map(
+        props.map((p) => [
+          p.id as string,
+          String(p.verification_status ?? "unverified"),
+        ]),
+      );
+      const byRel: Record<string, string> = {};
+      for (const r of rels) {
+        const pid = r.property_id as string | null;
+        if (!pid) continue;
+        byRel[r.id as string] =
+          statusByProperty.get(pid) ?? "unverified";
+      }
+      setRelVerification(byRel);
+      setVerificationLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [supabase]);
 
   useEffect(() => {
     if (!selection) {
@@ -98,6 +199,17 @@ export default function NewOwnerReviewPage() {
     })();
     return () => { cancelled = true; };
   }, [selection, supabase]);
+
+  const hasVerifiedProperty = Object.values(relVerification).some(
+    (s) => s === "verified",
+  );
+  /** UX-only: form only when the specifically selected relationship's property is verified. */
+  const selectedStatus = selection
+    ? (relVerification[selection.rel_id] ?? "unverified")
+    : null;
+  const showFormForSelection = selectedStatus === "verified";
+  const showPromptForSelection =
+    selection != null && selectedStatus !== "verified";
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -194,124 +306,154 @@ export default function NewOwnerReviewPage() {
         </p>
       </div>
 
-      <form
-        onSubmit={handleSubmit}
-        className="space-y-6 rounded-xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950"
-      >
-        {error ? (
-          <div
-            role="alert"
-            className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-200"
-          >
-            {error}
+      {verificationLoading ? (
+        <p className="text-sm text-zinc-500">Checking property verification…</p>
+      ) : !hasVerifiedProperty ? (
+        <VerifyPropertyPrompt />
+      ) : (
+        <div className="space-y-4">
+          <div className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+            <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+              Property / property manager
+            </label>
+            <PmSelector onSelect={setSelection} />
           </div>
-        ) : null}
 
-        <div>
-          <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-            Property manager
-          </label>
-          <PmSelector onSelect={setSelection} />
-        </div>
+          {showPromptForSelection ? <VerifyPropertyPrompt /> : null}
 
-        <div>
-          <span className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-            Overall rating <span className="text-red-600">*</span>
-          </span>
-          <div className="mt-2">
-            <StarRatingInput id="review-rating" value={rating} onChange={setRating} />
-          </div>
-        </div>
-
-        <div>
-          <label
-            htmlFor="review-text"
-            className="block text-sm font-medium text-zinc-700 dark:text-zinc-300"
-          >
-            Review <span className="text-red-600">*</span>
-          </label>
-          <textarea
-            id="review-text"
-            value={reviewText}
-            onChange={(e) => setReviewText(e.target.value)}
-            rows={6}
-            required
-            minLength={MIN_REVIEW_LENGTH}
-            placeholder={`At least ${MIN_REVIEW_LENGTH} characters…`}
-            className="mt-1 block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-900 focus:outline-none focus:ring-2 focus:ring-zinc-900/20 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50 dark:focus:border-zinc-400"
-          />
-          <p className="mt-1 text-xs text-zinc-500">
-            {reviewText.trim().length}/{MIN_REVIEW_LENGTH} characters minimum
-          </p>
-        </div>
-
-        <div>
-          <label
-            htmlFor="period-end"
-            className="block text-sm font-medium text-zinc-700 dark:text-zinc-300"
-          >
-            Date you stopped working with this PM (if applicable)
-          </label>
-          <input
-            id="period-end"
-            type="date"
-            value={periodEnd}
-            onChange={(e) => setPeriodEnd(e.target.value)}
-            className="mt-1 block w-full max-w-md rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-900 focus:outline-none focus:ring-2 focus:ring-zinc-900/20 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50 dark:focus:border-zinc-400"
-          />
-          <p className="mt-1 text-xs text-zinc-500">Optional</p>
-        </div>
-
-        <div>
-          <h2 className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-            Tag tickets (optional)
-          </h2>
-          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-            Link tickets you filed to this PM as context for your review.
-          </p>
           {!selection ? (
-            <p className="mt-3 text-sm text-zinc-500">Select a property manager to see tickets.</p>
-          ) : loadingTickets ? (
-            <p className="mt-3 text-sm text-zinc-500">Loading tickets…</p>
-          ) : tickets.length === 0 ? (
-            <p className="mt-3 text-sm text-zinc-500">No open or resolved tickets for this PM.</p>
-          ) : (
-            <ul className="mt-3 space-y-2 rounded-lg border border-zinc-200 bg-zinc-50/50 p-3 dark:border-zinc-700 dark:bg-zinc-900/30">
-              {tickets.map((t) => (
-                <li key={t.id} className="flex gap-3 text-sm">
-                  <input
-                    type="checkbox"
-                    id={`ticket-${t.id}`}
-                    checked={selectedTicketIds.has(t.id)}
-                    onChange={() => toggleTicket(t.id)}
-                    className="mt-1 h-4 w-4 rounded border-zinc-300 text-zinc-900 focus:ring-zinc-900 dark:border-zinc-600"
-                  />
-                  <label htmlFor={`ticket-${t.id}`} className="flex-1 cursor-pointer">
-                    <span className="font-medium text-zinc-900 dark:text-zinc-50">{t.title}</span>
-                    <span className="ml-2 text-xs capitalize text-zinc-500">{t.status}</span>
-                  </label>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+            <p className="text-sm text-zinc-500 dark:text-zinc-400">
+              Select a property to continue.
+            </p>
+          ) : null}
 
-        <div className="flex flex-wrap gap-3">
-          <button
-            type="submit"
-            disabled={submitting || !selection}
-            className="inline-flex items-center justify-center rounded-lg bg-zinc-900 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
-          >
-            {submitting ? "Submitting…" : "Submit review"}
-          </button>
-          <Link
-            href="/dashboard/reviews"
-            className="inline-flex items-center justify-center rounded-lg border border-zinc-200 px-4 py-2.5 text-sm font-medium text-zinc-800 hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
-          >
-            Cancel
-          </Link>
+          {showFormForSelection ? (
+            <form
+              onSubmit={handleSubmit}
+              className="space-y-6 rounded-xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950"
+            >
+              {error ? (
+                <div
+                  role="alert"
+                  className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-200"
+                >
+                  {error}
+                </div>
+              ) : null}
+
+              <div>
+                <span className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                  Overall rating <span className="text-red-600">*</span>
+                </span>
+                <div className="mt-2">
+                  <StarRatingInput
+                    id="review-rating"
+                    value={rating}
+                    onChange={setRating}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="review-text"
+                  className="block text-sm font-medium text-zinc-700 dark:text-zinc-300"
+                >
+                  Review <span className="text-red-600">*</span>
+                </label>
+                <textarea
+                  id="review-text"
+                  value={reviewText}
+                  onChange={(e) => setReviewText(e.target.value)}
+                  rows={6}
+                  required
+                  minLength={MIN_REVIEW_LENGTH}
+                  placeholder={`At least ${MIN_REVIEW_LENGTH} characters…`}
+                  className="mt-1 block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-900 focus:outline-none focus:ring-2 focus:ring-zinc-900/20 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50 dark:focus:border-zinc-400"
+                />
+                <p className="mt-1 text-xs text-zinc-500">
+                  {reviewText.trim().length}/{MIN_REVIEW_LENGTH} characters
+                  minimum
+                </p>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="period-end"
+                  className="block text-sm font-medium text-zinc-700 dark:text-zinc-300"
+                >
+                  Date you stopped working with this PM (if applicable)
+                </label>
+                <input
+                  id="period-end"
+                  type="date"
+                  value={periodEnd}
+                  onChange={(e) => setPeriodEnd(e.target.value)}
+                  className="mt-1 block w-full max-w-md rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm focus:border-zinc-900 focus:outline-none focus:ring-2 focus:ring-zinc-900/20 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50 dark:focus:border-zinc-400"
+                />
+                <p className="mt-1 text-xs text-zinc-500">Optional</p>
+              </div>
+
+              <div>
+                <h2 className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                  Tag tickets (optional)
+                </h2>
+                <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                  Link tickets you filed to this PM as context for your review.
+                </p>
+                {loadingTickets ? (
+                  <p className="mt-3 text-sm text-zinc-500">Loading tickets…</p>
+                ) : tickets.length === 0 ? (
+                  <p className="mt-3 text-sm text-zinc-500">
+                    No open or resolved tickets for this PM.
+                  </p>
+                ) : (
+                  <ul className="mt-3 space-y-2 rounded-lg border border-zinc-200 bg-zinc-50/50 p-3 dark:border-zinc-700 dark:bg-zinc-900/30">
+                    {tickets.map((t) => (
+                      <li key={t.id} className="flex gap-3 text-sm">
+                        <input
+                          type="checkbox"
+                          id={`ticket-${t.id}`}
+                          checked={selectedTicketIds.has(t.id)}
+                          onChange={() => toggleTicket(t.id)}
+                          className="mt-1 h-4 w-4 rounded border-zinc-300 text-zinc-900 focus:ring-zinc-900 dark:border-zinc-600"
+                        />
+                        <label
+                          htmlFor={`ticket-${t.id}`}
+                          className="flex-1 cursor-pointer"
+                        >
+                          <span className="font-medium text-zinc-900 dark:text-zinc-50">
+                            {t.title}
+                          </span>
+                          <span className="ml-2 text-xs capitalize text-zinc-500">
+                            {t.status}
+                          </span>
+                        </label>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              <div className="flex flex-wrap gap-3">
+                <button
+                  type="submit"
+                  disabled={submitting || !selection}
+                  className="inline-flex items-center justify-center rounded-lg bg-zinc-900 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                >
+                  {submitting ? "Submitting…" : "Submit review"}
+                </button>
+                <Link
+                  href="/dashboard/reviews"
+                  className="inline-flex items-center justify-center rounded-lg border border-zinc-200 px-4 py-2.5 text-sm font-medium text-zinc-800 hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                >
+                  Cancel
+                </Link>
+              </div>
+            </form>
+          ) : null}
         </div>
-      </form>
+      )}
     </div>
   );
 }

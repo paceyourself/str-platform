@@ -5,6 +5,7 @@ import {
   LegalP,
   LegalPageShell,
 } from "@/components/legal/legal-page-shell";
+import PropertyOwnershipVerification from "@/components/settings/property-ownership-verification";
 
 export const metadata: Metadata = {
   title: "Settings | VeroSTR",
@@ -38,6 +39,7 @@ export default function SettingsPage() {
       <p className="mt-4 text-sm leading-relaxed text-zinc-500 dark:text-zinc-400">
         Full account settings UI — placeholder for Sprint 19.
       </p>
+      <PropertyOwnershipVerification />
     </LegalPageShell>
   );
 }

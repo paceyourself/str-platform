@@ -19,18 +19,34 @@ type Review = {
   ticket_tags: { ticket: { queue: string; created_at: string } }[];
 };
 
-type Tab = "pending" | "disputed";
+type PendingVerification = {
+  id: string;
+  property_name: string | null;
+  address_line1: string | null;
+  owner_type: string | null;
+  entity_relationship: string | null;
+  verification_document_url: string | null;
+  verification_status: string;
+  owner_id: string;
+  owner: { display_name: string } | null;
+  documentUrl: string | null;
+};
+
+type Tab = "pending" | "disputed" | "verification";
 
 export default function AdminPage() {
   const supabase = createClient();
   const [tab, setTab] = useState<Tab>("pending");
   const [reviews, setReviews] = useState<Review[]>([]);
+  const [verifications, setVerifications] = useState<PendingVerification[]>(
+    [],
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionNote, setActionNote] = useState<Record<string, string>>({});
   const [acting, setActing] = useState<string | null>(null);
 
-  async function loadReviews(status: Tab) {
+  async function loadReviews(status: "pending" | "disputed") {
     setLoading(true);
     setError(null);
     const { data, error: err } = await supabase
@@ -63,8 +79,60 @@ export default function AdminPage() {
     setReviews((data as unknown as Review[]) ?? []);
   }
 
+  async function loadPendingVerifications() {
+    setLoading(true);
+    setError(null);
+    const { data, error: err } = await supabase
+      .from("properties")
+      .select(`
+        id,
+        property_name,
+        address_line1,
+        owner_type,
+        entity_relationship,
+        verification_document_url,
+        verification_status,
+        owner_id,
+        owner:owner_profiles!properties_owner_id_fkey(display_name)
+      `)
+      .eq("verification_status", "pending")
+      .is("deleted_at", null)
+      .order("property_name", { ascending: true });
+
+    if (err) {
+      setLoading(false);
+      setError(err.message);
+      return;
+    }
+
+    const rows = (data as unknown as Omit<PendingVerification, "documentUrl">[]) ?? [];
+    const withUrls: PendingVerification[] = await Promise.all(
+      rows.map(async (row) => {
+        let documentUrl: string | null = null;
+        const path = row.verification_document_url?.trim();
+        if (path) {
+          const { data: signed, error: signErr } = await supabase.storage
+            .from("attachments")
+            .createSignedUrl(path, 60 * 60);
+          if (!signErr && signed?.signedUrl) {
+            documentUrl = signed.signedUrl;
+          }
+        }
+        return { ...row, documentUrl };
+      }),
+    );
+
+    setVerifications(withUrls);
+    setLoading(false);
+  }
+
   useEffect(() => {
-    loadReviews(tab);
+    if (tab === "verification") {
+      void loadPendingVerifications();
+    } else {
+      void loadReviews(tab);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload on tab change only
   }, [tab]);
 
   async function approve(reviewId: string) {
@@ -122,10 +190,48 @@ export default function AdminPage() {
     setActionNote((prev) => ({ ...prev, [reviewId]: "" }));
   }
 
+  async function decideVerification(
+    propertyId: string,
+    decision: "verified" | "rejected",
+  ) {
+    setActing(propertyId);
+    setError(null);
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) {
+      setActing(null);
+      setError("You must be signed in as an admin.");
+      return;
+    }
+
+    const { error: err } = await supabase
+      .from("properties")
+      .update({
+        verification_status: decision,
+        verification_reviewed_by: user.id,
+        verification_reviewed_at: new Date().toISOString(),
+      })
+      .eq("id", propertyId)
+      .eq("verification_status", "pending");
+
+    setActing(null);
+    if (err) {
+      setError(err.message);
+      return;
+    }
+    setVerifications((prev) => prev.filter((p) => p.id !== propertyId));
+  }
+
   const tabs: { key: Tab; label: string }[] = [
     { key: "pending", label: "Pending" },
     { key: "disputed", label: "Disputed" },
+    { key: "verification", label: "Verification" },
   ];
+
+  function propertyLabel(p: PendingVerification) {
+    return p.property_name?.trim() || p.address_line1?.trim() || "Property";
+  }
 
   return (
     <div className="space-y-6">
@@ -134,7 +240,9 @@ export default function AdminPage() {
           Review moderation
         </h1>
         <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-          Approve, remove, or flag owner reviews before they go public.
+          {tab === "verification"
+            ? "Manually approve or reject property ownership verification submissions."
+            : "Approve, remove, or flag owner reviews before they go public."}
         </p>
       </div>
 
@@ -161,8 +269,99 @@ export default function AdminPage() {
         ))}
       </div>
 
-      {/* Review list */}
-      {loading ? (
+      {tab === "verification" ? (
+        loading ? (
+          <p className="text-sm text-zinc-500">Loading…</p>
+        ) : verifications.length === 0 ? (
+          <p className="text-sm text-zinc-500">
+            No pending verification submissions — queue is clear.
+          </p>
+        ) : (
+          <div className="space-y-4">
+            {verifications.map((p) => (
+              <div
+                key={p.id}
+                className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-700 dark:bg-zinc-900"
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                      {propertyLabel(p)}
+                    </p>
+                    <p className="mt-0.5 text-xs text-zinc-500">
+                      Owner: {p.owner?.display_name ?? "Unknown owner"}
+                    </p>
+                  </div>
+                  <span className="shrink-0 rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+                    Pending
+                  </span>
+                </div>
+
+                <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
+                  <div>
+                    <dt className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+                      Owner type
+                    </dt>
+                    <dd className="mt-0.5 text-zinc-900 dark:text-zinc-100">
+                      {p.owner_type ?? "—"}
+                    </dd>
+                  </div>
+                  {p.owner_type === "entity" ? (
+                    <div>
+                      <dt className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+                        Entity relationship
+                      </dt>
+                      <dd className="mt-0.5 text-zinc-900 dark:text-zinc-100">
+                        {p.entity_relationship?.trim() || "—"}
+                      </dd>
+                    </div>
+                  ) : null}
+                </dl>
+
+                <div className="mt-4">
+                  <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+                    Verification document
+                  </p>
+                  {p.documentUrl ? (
+                    <a
+                      href={p.documentUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-1 inline-block text-sm font-medium text-emerald-700 underline underline-offset-2 hover:text-emerald-800 dark:text-emerald-400 dark:hover:text-emerald-300"
+                    >
+                      View uploaded document
+                    </a>
+                  ) : p.verification_document_url ? (
+                    <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+                      Document on file ({p.verification_document_url}) — signed
+                      URL unavailable.
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-sm text-zinc-500">No document path stored.</p>
+                  )}
+                </div>
+
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    disabled={acting === p.id}
+                    onClick={() => void decideVerification(p.id, "verified")}
+                    className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+                  >
+                    {acting === p.id ? "Working…" : "Approve"}
+                  </button>
+                  <button
+                    disabled={acting === p.id}
+                    onClick={() => void decideVerification(p.id, "rejected")}
+                    className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                  >
+                    Reject
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )
+      ) : loading ? (
         <p className="text-sm text-zinc-500">Loading…</p>
       ) : reviews.length === 0 ? (
         <p className="text-sm text-zinc-500">
@@ -233,7 +432,7 @@ export default function AdminPage() {
                       {tt.ticket?.created_at
                         ? new Date(tt.ticket.created_at).toLocaleDateString(
                             "en-US",
-                            { month: "short", year: "numeric" }
+                            { month: "short", year: "numeric" },
                           )
                         : ""}
                     </span>
