@@ -350,7 +350,18 @@ Unless there is an explicit decision in the spec, do not build:
 - **submarket_zip_codes full seed** — incomplete. Only zip 32461 (airdna-2116) and zip 32459 (airdna-136) confirmed. Additional 30A zips pending AirDNA API boundary confirmation.
 - **pg_cron monthly re-evaluation** — deferred to Phase 2. Dashboard load server action is sufficient for MVP volume.
 - **Duplicate Stripe customer risk (Row 219)** — RESOLVED Sprint 21. Checkout route searches Stripe by email before creating session.
+- **Sprint 22 Scope Guard (Row 222)** — The Settings page addition for owner
+  verification is intentionally narrow: verification status display + upload
+  only. Do NOT expand into Row 213 (display name, email, notification
+  preferences, timezone, account deletion) as part of this work, even if it
+  seems like a natural adjacent improvement. Row 213 remains explicitly
+  deferred.
 
+- **Sprint 22 Scope Guard (Row 223)** — Ownership transfer / historical data
+  boundary is a known open gap (owner_id reassignment carries over historical
+  data with no boundary), but is NOT in scope this sprint. Do not attempt to
+  solve it as a side effect of Row 222's ownership-reset trigger — that
+  trigger only resets verification_status, nothing else.
 ---
 
 ## AirDNA Monthly Refresh
