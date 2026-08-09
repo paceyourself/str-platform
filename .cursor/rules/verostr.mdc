@@ -284,6 +284,35 @@ regardless of which toggle is selected. Delta is hidden (not shown as zero) if p
 - **Never use `owner_id` or `plan`** — these columns do not exist on the subscriptions table
 - **Correct values for owner trial:** `subscriber_type = 'owner'`, `tier = 'essentials'`, `billing_interval = 'annual'`, `status = 'trialing'`
 - **feature_flags — owner_tiers / pm_tiers columns:** `feature_flags` has `owner_tiers text[]` and `pm_tiers text[]` columns that must be populated on every new flag INSERT — they control which subscription tiers the flag applies to, separate from the `active` boolean. Omitting or mis-populating these does not error but silently scopes the flag incorrectly. Discovered undocumented Sprint 21 while building Row 214 (owner_tiers required: essentials/portfolio/investor for owner-facing flags; pm_tiers empty array for owner-only flags).
+
+---
+
+## RLS / Database Security Invariants
+
+### New RLS policy on a table with existing policies for the same operation
+Postgres RLS policies default to PERMISSIVE, which means multiple policies
+for the same operation (e.g. multiple INSERT policies) are OR'd together —
+if ANY permissive policy allows the action, it's allowed, regardless of
+what other policies say. Adding a new permissive policy intended to
+restrict access does NOT restrict anything if a more permissive policy
+already exists on the same table/operation — it silently adds another way
+in, not a gate.
+
+Discovered Sprint 22 (Row 222): the first version of the review-verification
+gating policy on `reviews` INSERT was written as PERMISSIVE. Since `reviews`
+already had a permissive INSERT policy, the new policy OR'd with it and
+enforced nothing — an unverified owner could still insert a review.
+Corrected to RESTRICTIVE, then verified against unverified/verified/
+service-role test cases.
+
+**Rule going forward:** before writing any new RLS policy, check whether
+the target table already has a policy for the same operation
+(`SELECT pg_policies WHERE tablename = '<table>' AND cmd = '<operation>'`).
+If it does, and the new policy is meant to narrow/restrict access rather
+than grant an additional path, it MUST be written `AS RESTRICTIVE`, not
+left as the PERMISSIVE default. Verify enforcement with a real rejected-
+insert test, not just that the policy exists.
+
 ---
 
 ## Active Properties (as of Sprint 19)
