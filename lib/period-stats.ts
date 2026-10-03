@@ -71,29 +71,54 @@ function parseDateMidday(iso: string | null | undefined): Date | null {
   return dt;
 }
 
+/**
+ * Half-open stay ∩ [windowStart, windowEndExclusive) night count.
+ * Sole booking-overlap arithmetic primitive — callers must not reimplement this.
+ * Null dates or check_out <= check_in → 0.
+ */
+export function nightsIntersectHalfOpenWindow(
+  checkInIso: string | null,
+  checkOutIso: string | null,
+  windowStart: Date,
+  windowEndExclusive: Date,
+): number {
+  const ci = parseDateMidday(checkInIso);
+  const co = parseDateMidday(checkOutIso);
+  if (!ci || !co || !(co > ci)) return 0;
+  if (
+    !(
+      ci.getTime() < windowEndExclusive.getTime() &&
+      co.getTime() > windowStart.getTime()
+    )
+  ) {
+    return 0;
+  }
+  const overlapStart =
+    ci.getTime() > windowStart.getTime()
+      ? new Date(ci.getFullYear(), ci.getMonth(), ci.getDate(), 12)
+      : windowStart;
+  const overlapEndExclusive =
+    co.getTime() < windowEndExclusive.getTime() ? co : windowEndExclusive;
+  if (!(overlapEndExclusive > overlapStart)) return 0;
+  return Math.round(
+    (overlapEndExclusive.getTime() - overlapStart.getTime()) / 86400000,
+  );
+}
+
+/** Calendar-month wrapper — same signature/behavior as before the shared primitive. */
 function nightsIntersectCalendarMonthHalfOpenStay(
   checkInIso: string | null,
   checkOutIso: string | null,
   year: number,
   month: number,
 ): number {
-  const ci = parseDateMidday(checkInIso);
-  const co = parseDateMidday(checkOutIso);
-  const first = new Date(year, month - 1, 1, 12, 0, 0);
-  const monthEndExclusive = new Date(year, month, 1, 12, 0, 0);
-  if (!ci || !co || !(co > ci)) return 0;
-  if (!(ci.getTime() < monthEndExclusive.getTime() && co.getTime() > first.getTime())) {
-    return 0;
-  }
-  const overlapStart =
-    ci.getTime() > first.getTime()
-      ? new Date(ci.getFullYear(), ci.getMonth(), ci.getDate(), 12)
-      : first;
-  const overlapEndExclusive =
-    co.getTime() < monthEndExclusive.getTime() ? co : monthEndExclusive;
-  if (!(overlapEndExclusive > overlapStart)) return 0;
-  return Math.round(
-    (overlapEndExclusive.getTime() - overlapStart.getTime()) / 86400000,
+  const monthStart = new Date(year, month - 1, 1, 12, 0, 0);
+  const nextMonthStart = new Date(year, month, 1, 12, 0, 0);
+  return nightsIntersectHalfOpenWindow(
+    checkInIso,
+    checkOutIso,
+    monthStart,
+    nextMonthStart,
   );
 }
 
