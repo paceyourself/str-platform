@@ -34,6 +34,11 @@ const PRIMARY_NAV: NavItem[] = [
     active: (p) => p.startsWith("/dashboard/analytics"),
   },
   {
+    href: "/dashboard/pacing",
+    label: "Pacing",
+    active: (p) => p.startsWith("/dashboard/pacing"),
+  },
+  {
     href: "/dashboard/tickets",
     label: "Tickets",
     active: (p) => p.startsWith("/dashboard/tickets"),
@@ -60,6 +65,7 @@ function isMoreSpecificDashboard(path: string) {
     "/dashboard/properties",
     "/dashboard/upload",
     "/dashboard/analytics",
+    "/dashboard/pacing",
     "/dashboard/billing",
     "/dashboard/tickets",
     "/dashboard/surveys",
