@@ -9,6 +9,7 @@
 
 import Link from "next/link";
 import { PerformanceSummaryCards } from "@/components/performance-summary-cards";
+import { CfyPacingChart } from "@/components/cfy-pacing-chart";
 import { useBenchmarkDisplayEnabled } from "@/components/benchmark-display-context";
 import {
   coverageHoles,
@@ -17,6 +18,8 @@ import {
   staleIncompleteCoverageMonths,
   type CoverageBookingRow,
 } from "@/lib/coverage-completeness";
+import { computeCfyPacingMonths, type CfyMetric } from "@/lib/cfy-pacing";
+import { formatBookingsAsOf } from "@/lib/pacing";
 import { createClient } from "@/lib/supabase";
 import { resolveDefaultPeriodMode } from "@/lib/period-default";
 import { computePeriodStats, pctDelta, type PeriodStats } from "@/lib/period-stats";
@@ -48,6 +51,8 @@ type BookingRow = {
   gross_revenue: number | string | null;
   check_in: string | null;
   check_out: string | null;
+  booked_date: string | null;
+  cancelled_at: string | null;
   status: string | null;
   /** Planned owner stays reduce denominator; explicit false (last-minute) does not. */
   is_planned_owner_stay: boolean | null;
@@ -76,7 +81,7 @@ type BenchmarkRow = {
   benchmark_occ: number | string | null;
 };
 
-type PeriodMode = "cytd" | "ltm" | "lfy";
+type PeriodMode = "cytd" | "ltm" | "lfy" | "cfy_pacing";
 
 type CalendarMonth = { year: number; month: number };
 
@@ -98,6 +103,7 @@ const PERIOD_TOGGLE_DEF: Record<
   cytd: { label: "CYTD vs PYTD", shortLabel: "CYTD" },
   ltm: { label: "LTM vs PLTM", shortLabel: "LTM" },
   lfy: { label: "LFY vs PLFY", shortLabel: "LFY" },
+  cfy_pacing: { label: "CFY Pacing", shortLabel: "CFY Pacing" },
 };
 
 function monthKey(y: number, m: number): string {
@@ -614,7 +620,8 @@ export default function AnalyticsPage() {
   const [covLoading, setCovLoading] = useState(false);
   const periodDefaultedRef = useRef(false);
   const [activeKpiTab, setActiveKpiTab] = useState<KpiTab>("revenue");
-
+  const [cfyMetric, setCfyMetric] = useState<CfyMetric>("revenue");
+  const [latestUploadAt, setLatestUploadAt] = useState<string | null>(null);
 
   const loadPropertiesChain = useCallback(async () => {
     setPropsLoading(true);
@@ -686,7 +693,7 @@ export default function AnalyticsPage() {
       const { data, error } = await supabase
         .from("bookings")
         .select(
-          "property_id, block_type, gross_revenue, check_in, check_out, status, is_planned_owner_stay",
+          "property_id, block_type, gross_revenue, check_in, check_out, booked_date, cancelled_at, status, is_planned_owner_stay",
         )
         .in("property_id", ids);
       if (cancel) return;
@@ -697,6 +704,17 @@ export default function AnalyticsPage() {
         return;
       }
       setBookings((data as BookingRow[]) ?? []);
+
+      const { data: uploadData } = await supabase
+        .from("upload_batches")
+        .select("uploaded_at")
+        .in("property_id", ids)
+        .order("uploaded_at", { ascending: false })
+        .limit(1);
+      if (!cancel) {
+        const row = (uploadData ?? [])[0] as { uploaded_at?: string } | undefined;
+        setLatestUploadAt(row?.uploaded_at ?? null);
+      }
     })();
     return () => {
       cancel = true;
@@ -931,6 +949,7 @@ export default function AnalyticsPage() {
       cytd: { curr: cytd.current, prior: cytd.prior },
       ltm: { curr: lw.current, prior: lw.prior },
       lfy: { curr: lfyCurr, prior: lfyPrior },
+      cfy_pacing: { curr: [], prior: [] },
     } as Record<PeriodMode, { curr: CalendarMonth[]; prior: CalendarMonth[] }>;
   }, [lcm]);
 
@@ -1000,6 +1019,14 @@ export default function AnalyticsPage() {
         currIncluded: 0,
         priorIncluded: 0,
         total: 0,
+        currInsufficient: 0,
+        incompleteMonthsCurr: [],
+        incompleteMonthsPrior: [],
+      },
+      cfy_pacing: {
+        currIncluded: scopedProperties.length,
+        priorIncluded: scopedProperties.length,
+        total: scopedProperties.length,
         currInsufficient: 0,
         incompleteMonthsCurr: [],
         incompleteMonthsPrior: [],
@@ -1193,6 +1220,20 @@ export default function AnalyticsPage() {
   ]);
 
   const periodPack = useMemo(() => {
+    if (periodMode === "cfy_pacing") {
+      return {
+        currCombined: [] as {
+          label: string;
+          ymKey: string;
+          current: null;
+          prior: null;
+        }[],
+        currIncluded: 0,
+        currTotal: 0,
+        currInsufficient: 0,
+        priorIncluded: 0,
+      };
+    }
     const { curr, prior } = periodWindows[periodMode];
     const curPack = computeScopedMetrics(curr);
     const priPack = computeScopedMetrics(prior);
@@ -1308,6 +1349,12 @@ export default function AnalyticsPage() {
   const toggleDisabled = (
     mode: PeriodMode,
   ): { locked: boolean; tooltip: string } => {
+    if (mode === "cfy_pacing") {
+      if (!scopedProperties.length) {
+        return { locked: true, tooltip: "No properties in this view." };
+      }
+      return { locked: false, tooltip: "" };
+    }
     const L = coverageInclusionByMode[mode];
     const currentYear = new Date().getFullYear();
     if (!scopedProperties.length) {
@@ -1397,13 +1444,52 @@ export default function AnalyticsPage() {
   );
 
   const showAnalytics =
-    locksNow.currComplete &&
-    (viewLevel !== "property" || scopedHasBookings || bookingsLoading);
+    periodMode === "cfy_pacing"
+      ? viewLevel !== "property" || scopedHasBookings || bookingsLoading
+      : locksNow.currComplete &&
+        (viewLevel !== "property" || scopedHasBookings || bookingsLoading);
+
+  const cfyRows = useMemo(() => {
+    if (periodMode !== "cfy_pacing") return [];
+    const scopedIds = new Set(scopedProperties.map((p) => p.id));
+    const scoped = scopedBookingsFlat.filter(
+      (b) => b.property_id && scopedIds.has(b.property_id),
+    );
+    return computeCfyPacingMonths({
+      bookings: scoped,
+      metric: cfyMetric,
+      isMonthIncomplete: (year, month) => {
+        return scopedProperties.some((p) => {
+          const pmId = pmByProperty.get(p.id) ?? "";
+          if (!pmId) return true;
+          const row = coverage.find(
+            (c) =>
+              c.property_id === p.id &&
+              c.pm_id === pmId &&
+              c.coverage_year === year &&
+              c.coverage_month === month,
+          );
+          if (!row) return true;
+          return !(row.data_complete || row.admin_override);
+        });
+      },
+    });
+  }, [
+    periodMode,
+    cfyMetric,
+    scopedProperties,
+    scopedBookingsFlat,
+    coverage,
+    pmByProperty,
+  ]);
+
+  const bookingsAsOfLabel = formatBookingsAsOf(latestUploadAt);
 
   useEffect(() => {
     let cancel = false;
 
     if (
+      periodMode === "cfy_pacing" ||
       bookingsLoading ||
       covLoading ||
       !showAnalytics ||
@@ -1736,7 +1822,7 @@ export default function AnalyticsPage() {
         </div>
       </div>
 
-      {!locksNow.currComplete ? (
+      {!locksNow.currComplete && periodMode !== "cfy_pacing" ? (
         <CoverageLockedEmpty
           viewLabel={viewScopeLabel}
           earliestGap={inclusionNow.incompleteMonthsCurr[0]}
@@ -1755,7 +1841,8 @@ export default function AnalyticsPage() {
             <p className="text-sm text-zinc-600 dark:text-zinc-400">Loading coverage…</p>
           ) : null}
 
-          {locksNow &&
+          {periodMode !== "cfy_pacing" &&
+          locksNow &&
           locksNow.currComplete &&
           !locksNow.priorComplete ? (
             <div className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-700 dark:border-zinc-700 dark:bg-zinc-950/60 dark:text-zinc-300">
@@ -1832,6 +1919,16 @@ export default function AnalyticsPage() {
               </p>
             ) : null}
 
+            {periodMode === "cfy_pacing" ? (
+              <div className="mt-4">
+                <CfyPacingChart
+                  rows={cfyRows}
+                  metric={cfyMetric}
+                  onMetricChange={setCfyMetric}
+                  bookingsAsOf={bookingsAsOfLabel}
+                />
+              </div>
+            ) : (
             <div className="mt-4">
             {performanceSummaryLoading || !performanceSummary ? (
               <p className="text-sm text-zinc-500">Loading performance metrics…</p>
@@ -1849,8 +1946,10 @@ export default function AnalyticsPage() {
             />
             )}
             </div>
+            )}
           </section>
 
+          {periodMode !== "cfy_pacing" ? (
           <section className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950 dark:shadow-none">
             <div className="mb-4 flex flex-wrap gap-2 border-b border-zinc-200 pb-4 dark:border-zinc-700">
               {kpiTabs.map((tab) => (
@@ -1989,6 +2088,7 @@ export default function AnalyticsPage() {
               </p>
             ) : null}
           </section>
+          ) : null}
         </>
       ) : null}
     </div>
