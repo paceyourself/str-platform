@@ -4,7 +4,7 @@ globs:
 alwaysApply: true
 ---
 # VeroSTR — Cursor Standing Rules
-# Analytics Framework Spec v1.4 | Schema v0.19 | Sprint 21
+# Analytics Framework Spec v1.4 | Schema v0.19 | Sprint 22
 # Read this before touching any analytics, dashboard, upload, or billing code.
 
 ---
@@ -221,6 +221,37 @@ Index = Math.round((property_revpar / benchmarkRevPAR) × 100)
   once licensed benchmark data is ingested from confirmed vendor.
   Index trend + decomposition (Row 159) deferred until Row 182 complete.
 
+### Owner review verification — built Sprint 22 (Row 222)
+- Reviews INSERT is gated by a RESTRICTIVE policy requiring the referenced property's
+  `verification_status = 'verified'`, reached via `reviews → owner_pm_relationships →
+  properties` — `reviews` has NO `property_id` column. See "RLS / Database Security
+  Invariants" above for why this must be RESTRICTIVE, not PERMISSIVE.
+- A trigger on `properties.owner_id` UPDATE resets the verification fields at the
+  database level — it does not depend on application code remembering to do it. See
+  the Row 223 scope guard below for exactly which fields it resets.
+- The admin approve/reject handler sends a hardcoded three-field payload
+  (`verification_status`, `verification_reviewed_by`, `verification_reviewed_at`) and
+  never spreads request data into the update. This matters because the admin UPDATE
+  policy on `properties` is row-level only — Postgres RLS doesn't restrict by column —
+  so the handler's hardcoded payload is the real safety boundary, not the policy.
+
+### PM forecast Type 2 — built Sprint 22 (Row 225)
+- `baseline`, `actual_incremental`, and `miss_pct` on `pm_forecast_commitments` are
+  computed live at query time — never stored.
+- Bookings with `cancelled_at IS NOT NULL` are excluded from both `baseline` and
+  `actual_incremental`, on both sides of the comparison.
+- `same_year_check` CHECK constraint enforces `target_date` and `date_committed` in
+  the same calendar year, at the database level — not just in the UI.
+- RLS: owners get SELECT + INSERT only, scoped to owned properties, with
+  `entered_by = auth.uid()` required on insert. Admins get SELECT only (read-only).
+
+### PmSelector — one option per relationship (Sprint 22)
+`PmSelector` lists one option per `owner_pm_relationship`, not one per PM. Used by
+both the review submission form and the ticket submission form. A prior version
+collapsed to the first relationship only, silently mis-attributing
+`owner_pm_relationship_id` on tickets for owners with multiple properties. Fixed
+Sprint 22.
+
 ---
 
 ## Period Framework — CYTD / LTM / LFY
@@ -356,6 +387,9 @@ Submarket benchmark data not yet ingested — requires AirDNA API active.
 | Legal page shell          | `components/legal/legal-page-shell.tsx` |
 | Supabase admin client     | `lib/supabase-admin.ts`                 |
 | App base URL helper       | `lib/app-url.ts`                        |
+| Forecast page (property-level) | `app/dashboard/properties/[id]/forecast/page.tsx` |
+| Property ownership verification | `components/settings/property-ownership-verification.tsx` |
+| PM forecast commitments lib | `lib/pm-forecast-commitments.ts` |
 
 ---
 
@@ -390,7 +424,25 @@ Unless there is an explicit decision in the spec, do not build:
   boundary is a known open gap (owner_id reassignment carries over historical
   data with no boundary), but is NOT in scope this sprint. Do not attempt to
   solve it as a side effect of Row 222's ownership-reset trigger — that
-  trigger only resets verification_status, nothing else.
+  trigger resets four fields when owner_id changes: verification_status to
+  'unverified', and verification_document_url, verification_reviewed_by and
+  verification_reviewed_at to NULL. It does NOT reset owner_type or
+  entity_relationship, and it does nothing for bookings, reviews, forecasts
+  or any other prior-owner data (see Row 223).
+
+- **Sprint 22 Scope Guard (Row 224)** — PM forecast Type 1 (annual weekly
+  schedule) UI and any forecast ingestion pipeline are deferred. Do not
+  build. The Row 224 section of the property forecast page
+  (`app/dashboard/properties/[id]/forecast/page.tsx`) must remain a static,
+  inert placeholder only.
+- **Row 234** — Never infer a foundational table's shape (`properties`,
+  `owner_profiles`, `subscriptions`, `bookings`) from migration files
+  alone. Migration history can drift from what's actually deployed — check
+  production directly.
+- **Row 235** — `owner_profiles` has unused OCR-related columns. Do not
+  wire them into any verification or review flow — no OCR is part of the
+  locked Row 222 design.
+
 ---
 
 ## AirDNA Monthly Refresh
@@ -428,4 +480,4 @@ If nothing structural changed, state "CLAUDE.md — no changes needed" explicitl
 
 ---
 
-*VeroSTR | verostr.mdc | Schema v0.19 | Analytics Spec v1.4 | Sprint 21*
+*VeroSTR | verostr.mdc | Schema v0.19 | Analytics Spec v1.4 | Sprint 22*

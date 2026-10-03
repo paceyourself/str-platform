@@ -23,12 +23,16 @@ STR owner analytics and PM accountability SaaS. Owners upload booking CSVs; plat
 | `components/legal/legal-page-shell.tsx` | Shared layout for all legal pages (/terms, /privacy, /privacy/ccpa, /settings). |
 | `lib/supabase-admin.ts` | Admin Supabase client (SECURITY DEFINER). Requires SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY — never NEXT_PUBLIC_ variants. |
 | `lib/app-url.ts` | getAppBaseUrl() — reads NEXT_PUBLIC_APP_URL first. Must be set in Vercel Production or Stripe redirects to Vercel preview URL. |
+| `app/dashboard/properties/[id]/forecast/page.tsx` | Property-level forecast page. Row 225 (Type 2 commitments) live; Row 224 (Type 1) section is a static placeholder only. |
+| `components/settings/property-ownership-verification.tsx` | Settings-page section for owner ownership verification (Row 222): status display + document upload. |
+| `lib/pm-forecast-commitments.ts` | PM forecast Type 2 calculation logic (baseline/actual_incremental/miss_pct). Computed live — never stored. |
 
 ## Supabase Conventions
 - Use `supabase` client from `lib/supabase.ts`; admin operations use `lib/supabase-admin.ts`
 - RLS is active — always test queries under the correct role
 - Migrations live in `supabase/migrations/` — never alter schema outside a migration file
 - Pricing: always read via `get_current_rate('rate_key')` — never hardcode dollar amounts or trial lengths
+- Never infer a foundational table's shape (`properties`, `owner_profiles`, `subscriptions`, `bookings`) from migration files alone (Row 234) — migration history can drift from what's actually deployed; check production directly
 
 ## STR Data Rules
 - Revenue column: `gross_revenue` only — `net_owner_revenue` does not exist
