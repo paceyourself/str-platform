@@ -26,6 +26,10 @@ STR owner analytics and PM accountability SaaS. Owners upload booking CSVs; plat
 | `app/dashboard/properties/[id]/forecast/page.tsx` | Property-level forecast page. Row 225 (Type 2 commitments) live; Row 224 (Type 1) section is a static placeholder only. |
 | `components/settings/property-ownership-verification.tsx` | Settings-page section for owner ownership verification (Row 222): status display + document upload. |
 | `lib/pm-forecast-commitments.ts` | PM forecast Type 2 calculation logic (baseline/actual_incremental/miss_pct). Computed live — never stored. |
+| `app/dashboard/pacing/page.tsx` | Pacing view (Row 157): on-the-books vs. PM forecast, by remaining month, counting from today forward. |
+| `lib/pacing.ts` | Pacing view calculation logic. Uses the shared overlap primitive in `lib/period-stats.ts` — no local overlap arithmetic. |
+| `components/cfy-pacing-chart.tsx` | CFY Pacing chart (Row 236): stacked current-year vs. prior-year segments, 4th option on the Analytics Performance Summary toggle. |
+| `lib/cfy-pacing.ts` | CFY Pacing chart calculation logic. Also uses the shared overlap primitive — no new overlap arithmetic. |
 
 ## Supabase Conventions
 - Use `supabase` client from `lib/supabase.ts`; admin operations use `lib/supabase-admin.ts`
@@ -38,7 +42,7 @@ STR owner analytics and PM accountability SaaS. Owners upload booking CSVs; plat
 - Revenue column: `gross_revenue` only — `net_owner_revenue` does not exist
 - Nights: always compute as `(check_out::date - check_in::date)` — no `nights` column
 - Cross-month bookings must be prorated — see proration formula in `verostr.mdc`
-- Future bookings excluded from all analytics via `check_in < CURRENT_DATE`
+- Future bookings excluded from all analytics via `check_in < CURRENT_DATE` — **except** the Pacing view and CFY Pacing chart (Sprint 23, Rows 157/236), which intentionally include future-dated on-the-books nights. See `verostr.mdc` for the exact boundary.
 - RevPAR denominator = `available_nights`; ADR denominator = `prorated_booked_nights` — never swap
 - `benchmark_occ` stored as 0–100 scale — do not divide by 100
 - `markets.display_name` — markets table name column is `display_name` not `name`; `name` does not exist

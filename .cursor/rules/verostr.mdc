@@ -4,7 +4,7 @@ globs:
 alwaysApply: true
 ---
 # VeroSTR — Cursor Standing Rules
-# Analytics Framework Spec v1.4 | Schema v0.19 | Sprint 22
+# Analytics Framework Spec v1.4 | Schema v0.19 | Sprint 23
 # Read this before touching any analytics, dashboard, upload, or billing code.
 
 ---
@@ -65,6 +65,11 @@ AND check_in < CURRENT_DATE   -- excludes future bookings
 ✅ Excluded from all analytics via: check_in < CURRENT_DATE
 ❌ Never appear in any closed-period revenue, occupancy, ADR, or RevPAR calculation
 ```
+**Documented exception (Sprint 23, Rows 157/236):** the Pacing view (`/dashboard/pacing`) and
+the CFY Pacing chart (Analytics page, 4th toggle option) intentionally include future-dated
+nights as on-the-books bookings — never projected, never estimated. This is the only approved
+exception to the exclusion above. Every other analytics surface must continue to exclude
+`check_in < CURRENT_DATE`.
 
 ### Available nights denominator
 ```
@@ -252,6 +257,56 @@ collapsed to the first relationship only, silently mis-attributing
 `owner_pm_relationship_id` on tickets for owners with multiple properties. Fixed
 Sprint 22.
 
+### Shared overlap primitive — built Sprint 23 (Rows 157/236)
+- `nightsIntersectHalfOpenWindow(checkInIso, checkOutIso, windowStart, windowEndExclusive)`
+  in `lib/period-stats.ts` is the SOLE booking-overlap arithmetic primitive. Do not
+  reimplement it elsewhere.
+- `nightsIntersectCalendarMonthHalfOpenStay` (used by `computePeriodStats`) is now a thin
+  wrapper over this primitive — same signature, same behavior, verified via before/after
+  regression (Hideaway/Mystic: current month, cross-month boundary, CYTD, prior full year
+  — exact match to the cent).
+- `overlapDaysWeekAndPeriod` (week-vs-period, used for benchmark RevPAR blending) has
+  DIFFERENT semantics and is NOT interchangeable with the primitive above.
+- Duplicated overlap helpers still exist in `app/dashboard/analytics/page.tsx` and
+  `app/dashboard/page.tsx` — NOT consolidated this sprint (Row 239, deferred).
+- A forecast week `[week_start_date, week_start_date + 7)` is treated as a 7-night stay
+  when passed into the primitive.
+
+### Pacing view — PM forecast comparison — built Sprint 23 (Row 157)
+- New page at `/dashboard/pacing` (`app/dashboard/pacing/page.tsx`), calculation in
+  `lib/pacing.ts`. Separate from the closed-period Analytics page — never merge them.
+- On-the-books(M) and Plan(M) are both day-weighted using the shared overlap primitive
+  above, counting from **today forward** within the current month — this page does NOT
+  apply the `check_in < CURRENT_DATE` exclusion (see the documented exception under
+  "Future bookings").
+- Plan(M) sums `pm_forecast_weeks` rows for headers with `is_owner_selected = true`. A
+  property with no selected header shows "No PM forecast on file" and contributes
+  **null**, not zero, to Plan — do not conflate the two.
+- Gated via the same `analytics_page_access` feature flag as the Analytics page.
+- `pm_forecast_weeks` (new table, migration `20261003164914_create_pm_forecast_weeks.sql`):
+  no `property_id` (derived via `pm_forecast_id`); `projected_total_rent` is never stored,
+  computed at query time; RLS is SELECT-only for owners (via header ownership) and admins
+  (predicate copied verbatim from `pm_forecast_commitments`'s admin policy) — no owner
+  INSERT/UPDATE/DELETE path exists; do not copy `pm_forecasts`' owner FOR ALL policy
+  (see Row 240 below).
+- One-time bridge load (`scripts/one-time/load-oversee-2026-projection.ts`) populated two
+  `pm_forecasts` headers (Hideaway, Mystic) from `Mystic Hideaway Projection 2026.xlsx`.
+  This is a one-time script, not a general ingestion mechanism — the Row 224 general
+  pipeline and Type 1 annual-schedule UI remain deferred (see Row 224 scope guard below).
+
+### CFY Pacing chart — built Sprint 23 (Row 236)
+- 4th option ("CFY Pacing") on the existing Analytics Performance Summary toggle
+  (`app/dashboard/analytics/page.tsx`), calculation in `lib/cfy-pacing.ts`, rendered by
+  `components/cfy-pacing-chart.tsx`. Not a separate page.
+- Four stacked segments (current-year booked/remaining, prior-year booked-by-snapshot/
+  filled-in-later) computed via the shared overlap primitive only — no new overlap
+  arithmetic.
+- No schema change — no migration file for this row.
+- Elapsed months with `data_complete = false` (either year, any in-scope property) render
+  hatched with an "incomplete data" tooltip — never as zero.
+- Legend is locked: current-year Segment A `#1F4E79`, Segment B `#9DC3E6`; prior-year
+  Segment A `#595959`, Segment B `#BFBFBF`.
+
 ---
 
 ## Period Framework — CYTD / LTM / LFY
@@ -390,6 +445,10 @@ Submarket benchmark data not yet ingested — requires AirDNA API active.
 | Forecast page (property-level) | `app/dashboard/properties/[id]/forecast/page.tsx` |
 | Property ownership verification | `components/settings/property-ownership-verification.tsx` |
 | PM forecast commitments lib | `lib/pm-forecast-commitments.ts` |
+| Pacing view page | `app/dashboard/pacing/page.tsx` |
+| Pacing calculation lib | `lib/pacing.ts` |
+| CFY Pacing chart component | `components/cfy-pacing-chart.tsx` |
+| CFY Pacing calculation lib | `lib/cfy-pacing.ts` |
 
 ---
 
@@ -398,9 +457,12 @@ Submarket benchmark data not yet ingested — requires AirDNA API active.
 Unless there is an explicit decision in the spec, do not build:
 
 - **Statement revenue view** — cash basis attribution to checkout month. Phase 2. Separate feature.
-- **vs. Fcst tab** — forecast variance. Phase 2. `pm_forecasts` table exists but tab is not active.
+- **vs. Fcst tab** — forecast variance *percentage*. Phase 2. Distinct from the Pacing view
+  (Row 157, built Sprint 23): Row 157 explicitly excludes variance percentages by design
+  (§3.6 of its brief) — a dedicated variance tab is still deferred.
 - **Waterfall tab** — revenue bridge. Phase 2.
-- **Pacing view** — future bookings vs. forecast. Phase 2.
+- ~~Pacing view — future bookings vs. forecast. Phase 2.~~ **BUILT Sprint 23 (Row 157)** —
+  see "Pacing view — PM forecast comparison" under Calculation Rules above.
 - **PM billing tiers** (Growth / Professional / Enterprise) — Phase 2. Owner billing ships first.
 - **CYTD forecast comparison** — Phase 2. Period structure is in place; only the comparison series changes.
 - **Quarter toggle** — removed in v1.4. Do not re-add.
@@ -435,6 +497,12 @@ Unless there is an explicit decision in the spec, do not build:
   build. The Row 224 section of the property forecast page
   (`app/dashboard/properties/[id]/forecast/page.tsx`) must remain a static,
   inert placeholder only.
+  **Exception (Sprint 23):** a one-time bridge script
+  (`scripts/one-time/load-oversee-2026-projection.ts`) loaded real 2026
+  projection data into `pm_forecast_weeks` for the two founder properties
+  only (Row 157). This is NOT the general ingestion pipeline — that
+  pipeline, and the Type 1 annual-schedule UI itself, remain fully
+  deferred.
 - **Row 234** — Never infer a foundational table's shape (`properties`,
   `owner_profiles`, `subscriptions`, `bookings`) from migration files
   alone. Migration history can drift from what's actually deployed — check
@@ -442,6 +510,20 @@ Unless there is an explicit decision in the spec, do not build:
 - **Row 235** — `owner_profiles` has unused OCR-related columns. Do not
   wire them into any verification or review flow — no OCR is part of the
   locked Row 222 design.
+- **Row 238** — Cancellation detection lacks a date/coverage guard: a
+  partial CSV export marks every booking missing from the file as
+  cancelled, and `.neq("status","cancelled")` skips NULL-status rows. Fix
+  deferred. **Interim rule: never upload a partial export.**
+- **Row 239** — Overlap/proration helper was duplicated across
+  `lib/period-stats.ts`, `app/dashboard/analytics/page.tsx`, and
+  `app/dashboard/page.tsx`. Sprint 23 added the shared primitive and
+  re-pointed only the `lib/period-stats.ts` month helper to it (see
+  "Shared overlap primitive" above). The other two duplicates are still
+  NOT consolidated — do not do it as a side effect of unrelated work.
+- **Row 240** — `pm_forecasts`' owner FOR ALL policy lets owners update or
+  delete their own forecast headers, which conflicts with forecast-version
+  integrity. Decision needed; not changed this sprint. Do not copy this
+  policy pattern onto `pm_forecast_weeks` or any other forecast table.
 
 ---
 
@@ -480,4 +562,4 @@ If nothing structural changed, state "CLAUDE.md — no changes needed" explicitl
 
 ---
 
-*VeroSTR | verostr.mdc | Schema v0.19 | Analytics Spec v1.4 | Sprint 22*
+*VeroSTR | verostr.mdc | Schema v0.19 | Analytics Spec v1.4 | Sprint 23*
